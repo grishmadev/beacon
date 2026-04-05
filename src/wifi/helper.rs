@@ -1,4 +1,4 @@
-use crate::types::{FamilyInfo, Host};
+use crate::types::{CurrentConnection, FamilyInfo, Host, Interface};
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
@@ -88,12 +88,10 @@ pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error>> {
     })
 }
 
-pub fn get_scan(family_id: u16) -> Result<Vec<Host>, Box<dyn Error>> {
+pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error>> {
     let mut result = Vec::<Host>::new();
     let sock = NlSocket::new(NlFamily::Generic)?;
     // Read the interface card
-    let ifindex_str = std::fs::read_to_string("/sys/class/net/wlo1/ifindex")?;
-    let ifindex: u32 = ifindex_str.trim().parse()?;
 
     // Build from ifindex attribute
     let attr_type: AttrType<u16> = AttrTypeBuilder::default()
@@ -130,9 +128,7 @@ pub fn get_scan(family_id: u16) -> Result<Vec<Host>, Box<dyn Error>> {
 
     loop {
         let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
-
         let mut cursor = Cursor::new(&recv_buffer[..size]);
-
         let res: Nlmsghdr<GenlId, Genlmsghdr<CtrlCmd, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
         if let NlPayload::Err(e) = res.nl_payload() {
@@ -209,6 +205,14 @@ pub fn get_scan(family_id: u16) -> Result<Vec<Host>, Box<dyn Error>> {
                                     }
                                 }
 
+                                Nl80211Bss::BssStatus => {
+                                    let payload = nested.nla_payload().as_ref();
+                                    if payload.len() >= 4 {
+                                        let status = u32::from_le_bytes(payload[..4].try_into()?);
+                                        target.is_connected = status == 1;
+                                    }
+                                }
+
                                 _ => {}
                             }
                         } else {
@@ -222,4 +226,151 @@ pub fn get_scan(family_id: u16) -> Result<Vec<Host>, Box<dyn Error>> {
         }
     }
     Ok(result)
+}
+
+pub fn get_interface(family_id: u16) -> Result<Vec<Interface>, Box<dyn Error>> {
+    let sock = NlSocket::new(NlFamily::Generic)?;
+    // attribute not needed in request
+    // DUMP flag asks for all AP
+    let attr_buffer: GenlBuffer<u16, Buffer> = GenlBuffer::new();
+    let genl_header = GenlmsghdrBuilder::<u8, u16>::default()
+        .cmd(Nl80211Cmd::CmdGetInterface.into())
+        .version(1)
+        .attrs(attr_buffer)
+        .build()?;
+
+    let nl_msg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::REQUEST | NlmF::DUMP)
+        .nl_type(family_id)
+        .nl_payload(NlPayload::Payload(genl_header))
+        .build()?;
+
+    let mut msg_buffer = Cursor::new(Vec::<u8>::new());
+    nl_msg.to_bytes(&mut msg_buffer)?;
+    sock.send(msg_buffer.get_ref(), Msg::empty())?;
+    let mut result = Vec::<Interface>::new();
+    loop {
+        let mut recv_buffer = [0u8; 4096 * 16];
+        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+        let mut cursor = Cursor::new(&recv_buffer[..size]);
+
+        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+
+        if let NlPayload::Err(e) = res.nl_payload() {
+            return Err(format!("Kernel Error: {}", e).into());
+        }
+
+        if *res.nl_type() == u16::from(Nlmsg::Done) {
+            break;
+        }
+
+        if let NlPayload::Payload(genl) = res.nl_payload() {
+            let mut iface = Interface::new();
+            for attr in genl.attrs().iter() {
+                let payload = attr.nla_payload().as_ref();
+                match Nl80211Attr::from(*attr.nla_type().nla_type()) {
+                    Nl80211Attr::AttrIfindex => {
+                        if payload.len() >= 4 {
+                            iface.set_ifindex(u32::from_le_bytes(payload[..4].try_into()?));
+                        }
+                    }
+                    Nl80211Attr::AttrIfname => {
+                        let name = String::from_utf8_lossy(payload)
+                            .trim_end_matches('\0')
+                            .to_string();
+                        iface.set_ifname(name);
+                    }
+                    Nl80211Attr::AttrMac => {
+                        if payload.len() >= 6 {
+                            let mac = payload[..6]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<Vec<String>>()
+                                .join(":");
+                            iface.set_mac(mac);
+                        }
+                    }
+                    _ => {} // AttrWiphy, AttrIftype, AttrWdev etc
+                }
+            }
+            result.push(iface);
+        }
+    }
+
+    Ok(result)
+}
+
+pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn Error>> {
+    let sock = NlSocket::new(NlFamily::Generic)?;
+    let attr_buffer: GenlBuffer<u16, Buffer> = GenlBuffer::new();
+    let genl_header = GenlmsghdrBuilder::<u8, u16>::default()
+        .cmd(Nl80211Cmd::CmdGetInterface.into())
+        .version(1)
+        .attrs(attr_buffer)
+        .build()?;
+
+    let nl_msg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::REQUEST | NlmF::DUMP)
+        .nl_type(family_id)
+        .nl_payload(NlPayload::Payload(genl_header))
+        .build()?;
+    let mut msg_buffer = Cursor::new(Vec::<u8>::new());
+    nl_msg.to_bytes(&mut msg_buffer)?;
+    sock.send(msg_buffer.get_ref(), Msg::empty())?;
+    loop {
+        let mut recv_buffer = [0u8; 1024 * 64];
+        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+        let mut cursor = Cursor::new(&recv_buffer[..size]);
+        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+
+        if let NlPayload::Err(e) = res.nl_payload() {
+            return Err(format!("Kernel Error: {}", e).into());
+        }
+
+        if *res.nl_type() == u16::from(Nlmsg::Done) {
+            break;
+        }
+
+        if let NlPayload::Payload(genl) = res.nl_payload() {
+            let mut connection = CurrentConnection::new();
+            for attr in genl.attrs().iter() {
+                let payload = attr.nla_payload().as_ref();
+                match Nl80211Attr::from(*attr.nla_type().nla_type()) {
+                    Nl80211Attr::AttrIfname => {
+                        let name = String::from_utf8_lossy(payload)
+                            .trim_end_matches('\0')
+                            .to_string();
+                        connection.ifname = Some(name);
+                    }
+                    Nl80211Attr::AttrMac => {
+                        if payload.len() >= 6 {
+                            let mac = payload[..6]
+                                .iter()
+                                .map(|b| format!("{b:02X}"))
+                                .collect::<Vec<_>>()
+                                .join(":");
+                            connection.mac = Some(mac);
+                        }
+                    }
+                    Nl80211Attr::AttrIfindex => {
+                        if payload.len() >= 4 {
+                            let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
+                            let hosts = get_scan(family_id, ifindex)?;
+                            for host in hosts {
+                                if host.is_connected {
+                                    connection.ssid = host.ssid;
+                                    connection.bssid = host.bssid;
+                                    connection.frequency = host.frequency;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(Some(connection));
+        }
+    }
+    Ok(None)
 }
