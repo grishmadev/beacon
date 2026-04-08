@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dhcp4r = "0.2.3"
 neli = "0.7.4"
 nl80211 = "0.0.2"
+rand = "0.10.0"

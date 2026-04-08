@@ -1,23 +1,38 @@
 pub mod helper;
+pub mod wpa_supplicant;
 use std::error::Error;
 
 use crate::{
-    types::{Host, Interface},
-    wifi::helper::{get_family_info, get_interface, get_scan},
+    types::{CurrentConnection, Host, Interface},
+    wifi::helper::{get_family_info, get_interface, get_scan, trigger_scan},
 };
 
-pub fn scan_wifi_networks() -> Result<(), Box<dyn Error>> {
+pub fn get_active_networks() -> Result<Vec<Host>, Box<dyn Error>> {
     let family_info = get_family_info()?;
+    println!("{:#?}", family_info);
     let interfaces = get_interface(family_info.id)?;
-    display_interfaces(&interfaces);
+    let mut result = Vec::<Host>::new();
     for iface in interfaces {
-        let hosts = get_scan(family_info.id, iface.ifindex.unwrap())?;
-        display_hosts(hosts);
+        let ifname = iface.ifname.unwrap_or("---".to_string());
+        if let Some(ifindex) = iface.ifindex {
+            println!("Scanning {}", ifname);
+            trigger_scan(&family_info, ifindex)?;
+            let hosts = get_scan(family_info.id, ifindex)?;
+            result.extend(hosts);
+        } else {
+            println!("Couldn't Scan {}", ifname);
+        }
     }
-    Ok(())
+    Ok(result)
 }
 
-fn display_hosts(hosts: Vec<Host>) {
+pub fn get_current_connection() -> Result<Option<CurrentConnection>, Box<dyn Error>> {
+    let family_info = helper::get_family_info()?;
+    let current_connection = helper::get_current(family_info.id)?;
+    Ok(current_connection)
+}
+
+pub fn display_hosts(hosts: Vec<Host>) {
     println!(
         "{:<30} {:<20} {:>10} {:>12}",
         "SSID", "BSID", "Frequency(MHz)", "Signal(dBm)"

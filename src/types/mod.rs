@@ -35,9 +35,11 @@ impl Host {
     }
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct FamilyInfo {
     pub name: String,
     pub id: u16,
+    pub scan_group_id: u32,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -3,7 +3,7 @@ use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
     consts::{
-        genl::{CtrlAttr, CtrlCmd},
+        genl::{CtrlAttr, CtrlAttrMcastGrp, CtrlCmd},
         nl::{GenlId, NlmF, Nlmsg},
         socket::{Msg, NlFamily},
     },
@@ -11,6 +11,7 @@ use neli::{
     nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder},
     socket::NlSocket,
     types::{Buffer, GenlBuffer},
+    utils::Groups,
 };
 use std::{error::Error, io::Cursor};
 
@@ -63,29 +64,66 @@ pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error>> {
         return Err(format!("Kernel Error: {}", e).into());
     }
 
-    let mut family_name: Option<String> = None;
-    let mut family_id: Option<u16> = None;
+    let mut family_info = FamilyInfo::default();
+    let mut group_name = String::new();
+    let mut group_id = 0u32;
     if let NlPayload::Payload(genl) = res.nl_payload() {
         let attrs = genl.attrs();
         for attr in attrs.iter() {
             if *attr.nla_type().nla_type() == CtrlAttr::FamilyId {
                 let id: u16 = attr.get_payload_as()?;
-                family_id = Some(id);
+                family_info.id = id;
             }
             if *attr.nla_type().nla_type() == CtrlAttr::FamilyName {
                 let name_arr: [u8; 8] = attr.get_payload_as()?;
-                let name = name_arr.iter().map(|x| *x as char).collect::<String>();
-                family_name = Some(name);
+                let name = name_arr
+                    .iter()
+                    .map(|x| *x as char)
+                    .collect::<String>()
+                    .trim_end_matches('\0')
+                    .to_string();
+                family_info.name = name;
+            }
+            if *attr.nla_type().nla_type() == CtrlAttr::McastGroups {
+                let payload = attr.nla_payload().as_ref();
+                let mut outer_cursor = Cursor::new(payload);
+                'outer: while outer_cursor.position() < payload.len() as u64 {
+                    if let Ok(group) = Nlattr::<u16, Buffer>::from_bytes(&mut outer_cursor) {
+                        let group_bytes = group.nla_payload().as_ref();
+                        let mut inner_cursor = Cursor::new(group_bytes);
+                        while inner_cursor.position() < group_bytes.len() as u64 {
+                            if let Ok(inner) = Nlattr::<u16, Buffer>::from_bytes(&mut inner_cursor)
+                            {
+                                let inner_payload = inner.nla_payload().as_ref();
+                                let inner_type = *inner.nla_type().nla_type();
+                                match CtrlAttrMcastGrp::from(inner_type) {
+                                    CtrlAttrMcastGrp::Name => {
+                                        group_name = String::from_utf8_lossy(inner_payload)
+                                            .trim_end_matches('\0')
+                                            .to_string();
+                                    }
+                                    CtrlAttrMcastGrp::Id => {
+                                        let id = u32::from_le_bytes(inner_payload[..4].try_into()?);
+                                        group_id = id;
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        if group_name == "scan" {
+                            family_info.scan_group_id = group_id;
+                            break 'outer; // found what we needed.
+                        }
+                    } else {
+                        break;
+                    }
+                }
             }
         }
     }
-    if family_id.is_none() || family_name.is_none() {
-        return Err("Failed to get family info".into());
-    }
-    Ok(FamilyInfo {
-        name: family_name.unwrap(),
-        id: family_id.unwrap(),
-    })
+    Ok(family_info)
 }
 
 pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error>> {
@@ -342,6 +380,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                             .to_string();
                         connection.ifname = Some(name);
                     }
+
                     Nl80211Attr::AttrMac => {
                         if payload.len() >= 6 {
                             let mac = payload[..6]
@@ -352,20 +391,22 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                             connection.mac = Some(mac);
                         }
                     }
+
                     Nl80211Attr::AttrIfindex => {
                         if payload.len() >= 4 {
                             let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
                             let hosts = get_scan(family_id, ifindex)?;
-                            for host in hosts {
-                                if host.is_connected {
+                            match hosts.into_iter().find(|h| h.is_connected) {
+                                Some(host) => {
                                     connection.ssid = host.ssid;
                                     connection.bssid = host.bssid;
                                     connection.frequency = host.frequency;
-                                    break;
                                 }
+                                None => return Ok(None),
                             }
                         }
                     }
+
                     _ => {}
                 }
             }
@@ -373,4 +414,70 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
         }
     }
     Ok(None)
+}
+
+pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dyn Error>> {
+    let sock = NlSocket::new(NlFamily::Generic)?;
+    // join scan multicast groups
+    sock.add_mcast_membership(Groups::new_groups(&[family_info.scan_group_id]))?;
+
+    // build ifindex attribute
+    let attr_type: AttrType<u16> = AttrTypeBuilder::default()
+        .nla_type(Nl80211Attr::AttrIfindex.into())
+        .build()?;
+    let ifindex_attr = NlattrBuilder::default()
+        .nla_type(attr_type)
+        .nla_payload(ifindex)
+        .build()?;
+
+    let mut genl_buffer = GenlBuffer::new();
+    genl_buffer.push(ifindex_attr);
+
+    let genl_header: Genlmsghdr<u8, u16> = GenlmsghdrBuilder::default()
+        .cmd(Nl80211Cmd::CmdTriggerScan.into())
+        .version(1)
+        .attrs(genl_buffer)
+        .build()?;
+
+    let nl_msg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::REQUEST | NlmF::ACK)
+        .nl_type(family_info.id)
+        .nl_payload(NlPayload::Payload(genl_header))
+        .build()?;
+
+    let mut msg_buffer = Cursor::new(Vec::<u8>::new());
+    nl_msg.to_bytes(&mut msg_buffer)?;
+
+    // sending msg to socket
+    sock.send(msg_buffer.get_ref(), Msg::empty())?;
+
+    let mut recv_buffer = [0u8; 1024 * 64];
+    loop {
+        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+        // recieving scans can take 1 - 3 secs
+
+        let mut cursor = Cursor::new(&recv_buffer[..size]);
+        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+
+        if let NlPayload::Err(e) = res.nl_payload() {
+            return Err(format!("Kernel Error: {}", e).into());
+        }
+
+        if let NlPayload::Payload(genl) = res.nl_payload() {
+            match Nl80211Cmd::from(*genl.cmd()) {
+                Nl80211Cmd::CmdNewScanResults => {
+                    // scanning finished, new results in cache
+                    println!("Scan Complete...");
+                    break;
+                }
+                Nl80211Cmd::CmdScanAborted => {
+                    // Some other process interupted the scan
+                    return Err("Scan Aborted.".into());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
 }
