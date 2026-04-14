@@ -1,13 +1,20 @@
 use std::error::Error;
+use std::ffi::CString;
+use std::io::{self, ErrorKind};
+use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
+use std::time::{Duration, Instant};
 
 use dhcp4r::options::DhcpOption;
 use dhcp4r::packet::Packet;
+use socket2::{Domain, Protocol, SockAddr, Type};
 
 pub fn connect(
     mac_address: [u8; 6],
     ifname: &str,
+    ifindex: &u32,
     ssid: &str,
     password: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
@@ -122,7 +129,7 @@ pub fn connect(
                     .to_string();
                 println!("event: {}", event);
                 if event.contains("CTRL-EVENT-CONNECTED") {
-                    request_ip(mac_address)?;
+                    request_ip(ifindex, mac_address)?;
                     println!("Connected.");
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
@@ -152,7 +159,6 @@ pub fn disconnect(ifname: &str) -> Result<(), Box<dyn Error>> {
     loop {
         // wait for 5 secs to disconnet
         skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-
         let size = skt.recv(&mut recv_buf)?;
         let event = String::from_utf8_lossy(&recv_buf[..size])
             .trim()
@@ -178,57 +184,140 @@ fn find_saved_networks(
     Ok(None)
 }
 
-fn request_ip(mac_address: [u8; 6]) -> Result<(), Box<dyn Error>> {
-    println!("checkpoint");
-    let socket = UdpSocket::bind("0.0.0.0:68")?;
-    socket.set_broadcast(true)?;
+fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn Error>> {
+    let ifname = CString::new(ifname)?;
+    let fd = socket.as_raw_fd();
 
-    // point it at global broadcast address
-    let addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
-    let msg = Packet {
-        reply: false,
-        hops: 0,
-        xid: rand::random(),
-        secs: 0,
-        broadcast: true,
-        ciaddr: Ipv4Addr::UNSPECIFIED,
-        yiaddr: Ipv4Addr::UNSPECIFIED,
-        siaddr: Ipv4Addr::UNSPECIFIED,
-        giaddr: Ipv4Addr::UNSPECIFIED,
-        chaddr: mac_address,
-        options: vec![
-            DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Discover),
-            DhcpOption::ParameterRequestList(vec![1, 3, 6, 15]), // Subnet, Router, DNS, Domain
-        ],
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_BINDTODEVICE,
+            ifname.as_ptr() as *const libc::c_void,
+            ifname.as_bytes().len() as libc::socklen_t,
+        );
     };
 
-    let mut buf = [0u8; 1500];
-    let slice = msg.encode(&mut buf);
+    Ok(())
+}
 
-    println!("checkpoint 2");
-    // sending the socket
-    socket.send_to(slice, addr)?;
+fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>> {
+    println!("checkpoint");
+    let socket = socket2::Socket::new(
+        Domain::from(libc::AF_PACKET),
+        Type::from(libc::SOCK_RAW),
+        Some(Protocol::from(libc::ETH_P_IP)),
+    )?;
+    let sockaddr = unsafe {
+        let mut storage: libc::sockaddr_ll = std::mem::zeroed();
+        storage.sll_family = libc::AF_PACKET as u16;
+        storage.sll_ifindex = *ifindex as i32;
+        storage.sll_protocol = (libc::ETH_P_IP as u16).to_be(); // 0x800
 
-    let mut res_buf = [0u8; 1500];
+        // wrapping in socket2 addr
+        SockAddr::new(
+            std::mem::transmute_copy(&storage),
+            std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t,
+        )
+    };
+    socket.bind(&sockaddr)?;
 
-    loop {
-        let size = socket.recv(&mut res_buf)?;
-        let packet = Packet::from(&res_buf[..size]).map_err(|_| "Failed to parse DHCP Packet.")?;
-        if packet.xid != msg.xid {
-            println!("found: {:?}", packet.reply);
-            continue;
-        }
-        for option in packet.options {
-            match option {
-                DhcpOption::Router(gateways) => {
-                    println!("Router IPs: {:?}", gateways);
+    // point it at global broadcast address
+    // let addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
+    let total_retries = 5;
+    let xid = rand::random();
+    for attempt in 0..total_retries {
+        let msg = Packet {
+            reply: false,
+            hops: 0,
+            xid,
+            secs: 0,
+            broadcast: true,
+            ciaddr: Ipv4Addr::UNSPECIFIED,
+            yiaddr: Ipv4Addr::UNSPECIFIED,
+            siaddr: Ipv4Addr::UNSPECIFIED,
+            giaddr: Ipv4Addr::UNSPECIFIED,
+            chaddr: mac_address,
+            options: vec![
+                DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Discover),
+                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15]), // Subnet, Router, DNS, Domain
+            ],
+        };
+
+        // let mut buf = [0u8; 1500];
+        // let slice = msg.encode(&mut buf);
+
+        println!("checkpoint 2");
+        // sending the socket
+        // socket.send_to(slice, addr)?;
+
+        // socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        // let mut res_buf = [0u8; 1500];
+        let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
+        let timeout = Instant::now() + Duration::from_secs(10);
+
+        loop {
+            let now = Instant::now();
+            if now >= timeout {
+                break;
+            }
+            match socket.recv_from(&mut res_buf) {
+                Ok((size, src)) => {
+                    // println!("got {} bytes from {}", size, src);
+
+                    println!("src data: {:?}", src);
+                    let initialized_data =
+                        unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
+
+                    if size < 42 {
+                        continue;
+                    }
+
+                    // skipping ethernet, ip, udp headers
+                    let dhcp_data = &initialized_data[42..];
+
+                    let packet =
+                        Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
+
+                    println!("packet xid: {:?}, msg xid: {:?}", packet.xid, msg.xid);
+
+                    if packet.xid != msg.xid {
+                        continue;
+                    }
+                    for option in packet.options {
+                        // checking if offer answered and printing offered IP address
+                        if let DhcpOption::DhcpMessageType(val) = option {
+                            match val {
+                                dhcp4r::options::MessageType::Offer => {
+                                    println!("Offered IP: {:?}", packet.yiaddr);
+                                    return Ok(());
+                                }
+                                dhcp4r::options::MessageType::Ack => {
+                                    println!("got ACK: {}", packet.yiaddr);
+                                    break;
+                                }
+                                _ => {
+                                    println!("Didnt find desired message.");
+                                }
+                            }
+                        }
+                    }
                 }
-                DhcpOption::SubnetMask(mask) => {
-                    println!("subnet mast: {:?}", mask);
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // no packets keep waiting.
+                    // println!("Getting WouldBlock Errors");
+                    continue;
                 }
-                _ => {}
+                Err(e) => {
+                    println!("Kernel Error: {:?}", e);
+                    return Err(e.into());
+                }
             }
         }
-        return Ok(());
+        println!(
+            "No reply, Retrying... Attempts left {}",
+            total_retries - attempt
+        );
     }
+    Err("Failed after retry.".into())
 }

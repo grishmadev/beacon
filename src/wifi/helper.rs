@@ -407,7 +407,9 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                         }
                     }
 
-                    _ => {}
+                    _ => {
+                        println!("{:#?}", String::from_utf8_lossy(payload))
+                    }
                 }
             }
             return Ok(Some(connection));
