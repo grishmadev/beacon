@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::ffi::CString;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 
 use dhcp4r::options::DhcpOption;
 use dhcp4r::packet::Packet;
+use rtnetlink::new_connection;
 use socket2::{Domain, Protocol, SockAddr, Type};
+
+use crate::types::DhcpLease;
 
 pub fn connect(
     mac_address: [u8; 6],
@@ -29,8 +32,11 @@ pub fn connect(
 
     // connect to server
     skt.connect(&server_path).map_err(|_| {
-        "wpa_supplicant not running. Start it first:\n  \
-                       sudo wpa_supplicant -B -i wlo1 -c /etc/wpa_supplicant.conf"
+        format!(
+            "wpa_supplicant not running. Start it first:\n  
+                       sudo wpa_supplicant -B -i {} -c /etc/wpa_supplicant.conf",
+            ifname
+        )
     })?;
 
     let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
@@ -76,10 +82,6 @@ pub fn connect(
     // check if password exists
     let network_id = if let Some(pass) = password {
         let network_id = send_cmd("ADD_NETWORK")?;
-        // .split(" ")
-        // .last()
-        // .unwrap_or("")
-        // .to_string();
 
         let ssid_cmd = format!("SET_NETWORK {} ssid \"{}\"", network_id, ssid);
         let ssid_ok = send_cmd(&ssid_cmd)?;
@@ -129,9 +131,8 @@ pub fn connect(
                     .to_string();
                 println!("event: {}", event);
                 if event.contains("CTRL-EVENT-CONNECTED") {
-                    request_ip(ifindex, mac_address)?;
                     println!("Connected.");
-                    break;
+                    // break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
                     send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
                     send_cmd("SAVE_CONFIG")?;
@@ -142,6 +143,8 @@ pub fn connect(
             }
             Err(_) => return Err("connection timed out after 10 secs.".into()),
         }
+        let host_data = request_host_data(ifindex, ifname, mac_address)?;
+        let (connection, handle, _) = new_connection()?;
     }
 
     Ok(())
@@ -201,18 +204,38 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
-fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>> {
+fn request_host_data(
+    ifindex: &u32,
+    ifname: &str,
+    mac_address: [u8; 6],
+) -> Result<DhcpLease, Box<dyn Error>> {
     println!("checkpoint");
+    // point it at global broadcast address
+    // socket used only for sending signals
+    let broadcast_addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
+    let total_retries = 5;
+    let xid = rand::random();
+    let send_socket = UdpSocket::bind("0.0.0.0:68")?;
+    send_socket.set_broadcast(true)?;
+    bind_socket_to_device(&send_socket, ifname)?;
+
     let socket = socket2::Socket::new(
         Domain::from(libc::AF_PACKET),
         Type::from(libc::SOCK_RAW),
         Some(Protocol::from(libc::ETH_P_IP)),
     )?;
     let sockaddr = unsafe {
-        let mut storage: libc::sockaddr_ll = std::mem::zeroed();
-        storage.sll_family = libc::AF_PACKET as u16;
-        storage.sll_ifindex = *ifindex as i32;
-        storage.sll_protocol = (libc::ETH_P_IP as u16).to_be(); // 0x800
+        let mut ll: libc::sockaddr_ll = std::mem::zeroed();
+        ll.sll_family = libc::AF_PACKET as u16;
+        ll.sll_ifindex = *ifindex as i32;
+        ll.sll_protocol = (libc::ETH_P_IP as u16).to_be(); // 0x800
+        //
+        let mut storage: libc::sockaddr_storage = std::mem::zeroed();
+        std::ptr::copy_nonoverlapping(
+            &ll as *const libc::sockaddr_ll as *const u8,
+            &mut storage as *mut libc::sockaddr_storage as *mut u8,
+            std::mem::size_of::<libc::sockaddr_ll>(),
+        );
 
         // wrapping in socket2 addr
         SockAddr::new(
@@ -222,10 +245,6 @@ fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>>
     };
     socket.bind(&sockaddr)?;
 
-    // point it at global broadcast address
-    // let addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
-    let total_retries = 5;
-    let xid = rand::random();
     for attempt in 0..total_retries {
         let msg = Packet {
             reply: false,
@@ -240,42 +259,57 @@ fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>>
             chaddr: mac_address,
             options: vec![
                 DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Discover),
-                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15]), // Subnet, Router, DNS, Domain
+                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]), // Subnet, Router, DNS, Domain
             ],
         };
 
-        // let mut buf = [0u8; 1500];
-        // let slice = msg.encode(&mut buf);
+        let mut buf = [0u8; 1500];
+        let slice = msg.encode(&mut buf);
 
         println!("checkpoint 2");
         // sending the socket
-        // socket.send_to(slice, addr)?;
+        send_socket.send_to(slice, broadcast_addr)?;
 
-        // socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-        // let mut res_buf = [0u8; 1500];
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
         let timeout = Instant::now() + Duration::from_secs(10);
 
+        let mut subnet_mask: Option<Ipv4Addr> = None;
+        let mut ip_addr: Option<Ipv4Addr> = None;
+        let mut gateway: Option<Ipv4Addr> = None;
+        let mut dns_servers: Option<Vec<Ipv4Addr>> = None;
+        let mut lease_duration = 0u32;
+        let mut server_id: Option<Ipv4Addr> = None;
         loop {
             let now = Instant::now();
             if now >= timeout {
                 break;
             }
             match socket.recv_from(&mut res_buf) {
-                Ok((size, src)) => {
+                Ok((size, _)) => {
                     // println!("got {} bytes from {}", size, src);
 
-                    println!("src data: {:?}", src);
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
                     if size < 42 {
                         continue;
                     }
+                    if initialized_data[23] != 17 {
+                        continue;
+                    }
+                    let dest_port =
+                        u16::from_be_bytes([initialized_data[36], initialized_data[37]]);
+                    if dest_port != 68 {
+                        continue;
+                    }
+                    if initialized_data[42] != 2 {
+                        continue;
+                    }
+                    println!("found right packet");
 
                     // skipping ethernet, ip, udp headers
                     let dhcp_data = &initialized_data[42..];
-
                     let packet =
                         Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
 
@@ -284,23 +318,30 @@ fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>>
                     if packet.xid != msg.xid {
                         continue;
                     }
+
                     for option in packet.options {
                         // checking if offer answered and printing offered IP address
-                        if let DhcpOption::DhcpMessageType(val) = option {
-                            match val {
+                        match option {
+                            DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
                                     println!("Offered IP: {:?}", packet.yiaddr);
-                                    return Ok(());
-                                }
-                                dhcp4r::options::MessageType::Ack => {
-                                    println!("got ACK: {}", packet.yiaddr);
-                                    break;
+                                    ip_addr = Some(packet.yiaddr);
                                 }
                                 _ => {
                                     println!("Didnt find desired message.");
                                 }
+                            },
+                            DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
+                            DhcpOption::Router(routers) => {
+                                if !routers.is_empty() {
+                                    gateway = Some(routers[0]);
+                                }
                             }
-                        }
+                            DhcpOption::SubnetMask(subnet) => subnet_mask = Some(subnet),
+                            DhcpOption::ServerIdentifier(id) => server_id = Some(id),
+                            DhcpOption::IpAddressLeaseTime(secs) => lease_duration = secs,
+                            _ => {}
+                        };
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -313,6 +354,17 @@ fn request_ip(ifindex: &u32, mac_address: [u8; 6]) -> Result<(), Box<dyn Error>>
                     return Err(e.into());
                 }
             }
+            let result: DhcpLease = DhcpLease {
+                ip_addr: ip_addr.unwrap(),
+                subnet_mask: subnet_mask.unwrap(),
+                dns_servers: dns_servers.unwrap(),
+                server_id: server_id.unwrap(),
+                lease_duration,
+                renewal_time: lease_duration / 2,
+                rebinding_time: (lease_duration as f64 * 0.875) as u32,
+                gateway: gateway.unwrap(),
+            };
+            return Ok(result);
         }
         println!(
             "No reply, Retrying... Attempts left {}",

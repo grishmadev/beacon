@@ -10,3 +10,5 @@ nl80211 = "0.0.2"
 rand = "0.10.0"
 libc = "0.2.184"
 socket2 = "0.6.3"
+rtnetlink = "0.14"
+tokio = { version = "1.41", features = ["full"] }
