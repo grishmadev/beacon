@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::ffi::CString;
+use std::fs::write;
 use std::io;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -7,14 +8,14 @@ use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
 
-use dhcp4r::options::DhcpOption;
+use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
-use rtnetlink::new_connection;
+use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Type};
 
 use crate::types::DhcpLease;
 
-pub fn connect(
+pub async fn connect(
     mac_address: [u8; 6],
     ifname: &str,
     ifindex: &u32,
@@ -132,7 +133,7 @@ pub fn connect(
                 println!("event: {}", event);
                 if event.contains("CTRL-EVENT-CONNECTED") {
                     println!("Connected.");
-                    // break;
+                    break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
                     send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
                     send_cmd("SAVE_CONFIG")?;
@@ -143,10 +144,26 @@ pub fn connect(
             }
             Err(_) => return Err("connection timed out after 10 secs.".into()),
         }
-        let host_data = request_host_data(ifindex, ifname, mac_address)?;
-        let (connection, handle, _) = new_connection()?;
     }
+    let host_data = request_host_data(ifindex, ifname, mac_address)?;
+    println!("host data: {:#?}", host_data);
 
+    send_dhcp_request(&host_data.offer, host_data.ip_addr.unwrap(), ifname)?;
+
+    let (connection, handle, _) = new_connection()?;
+
+    tokio::spawn(connection);
+
+    apply_network_config(
+        handle,
+        *ifindex,
+        host_data.ip_addr.unwrap(),
+        host_data.gateway.unwrap(),
+    )
+    .await?;
+
+    set_dns(host_data.dns_servers)?;
+    // tokio::signal::ctrl_c().await?;
     Ok(())
 }
 
@@ -170,6 +187,126 @@ pub fn disconnect(ifname: &str) -> Result<(), Box<dyn Error>> {
             return Ok(());
         };
     }
+}
+
+async fn apply_network_config(
+    handle: Handle,
+    ifindex: u32,
+    ip: Ipv4Addr,
+    gateway: Ipv4Addr,
+) -> Result<(), Box<dyn Error>> {
+    // Add IP address (/24)
+    handle
+        .address()
+        .add(ifindex, ip.into(), 24)
+        .execute()
+        .await?;
+
+    // set the interface up
+    handle.link().set(ifindex).up().execute().await?;
+
+    // Add default route
+    handle
+        .route()
+        .add()
+        .v4()
+        .destination_prefix(Ipv4Addr::UNSPECIFIED, 0)
+        .gateway(gateway)
+        .execute()
+        .await?;
+
+    Ok(())
+}
+
+fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
+    if dns_servers.is_empty() {
+        return Ok(());
+    }
+    let mut config_lines = Vec::<String>::new();
+    for dns in dns_servers {
+        config_lines.push(format!("nameserver {}", dns));
+    }
+    println!("dns: {}", config_lines.join("\n"));
+    match write("/etc/resolv.conf", config_lines.join("\n")) {
+        Ok(_) => {
+            println!("DNS set!")
+        }
+        Err(e) => {
+            return Err(e.into());
+        }
+    };
+    Ok(())
+}
+
+fn send_dhcp_request(
+    offer: &Packet,
+    offered_ip: Ipv4Addr,
+    ifname: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut options = Vec::new();
+
+    // message type requesst
+    options.push(DhcpOption::DhcpMessageType(MessageType::Request));
+    println!("offered ip address: {:?}", offer.yiaddr);
+
+    // requested ip address (optins 50)
+    options.push(DhcpOption::RequestedIpAddress(offered_ip));
+
+    // options 54
+    if let Some(server_id) = offer.options.iter().find_map(|o| {
+        if let DhcpOption::ServerIdentifier(id) = o {
+            Some(*id)
+        } else {
+            None
+        }
+    }) {
+        options.push(DhcpOption::ServerIdentifier(server_id));
+    }
+
+    // ask for same things as before
+    options.push(DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]));
+
+    let request_packet = Packet {
+        reply: false,
+        hops: 0,
+        xid: offer.xid,
+        secs: 0,
+        broadcast: true,
+        ciaddr: Ipv4Addr::UNSPECIFIED,
+        yiaddr: Ipv4Addr::UNSPECIFIED,
+        siaddr: Ipv4Addr::UNSPECIFIED,
+        giaddr: Ipv4Addr::UNSPECIFIED,
+        chaddr: offer.chaddr,
+        options,
+    };
+
+    // bind socket to 0.0.0.0 because we dont yet have an IP
+    let socket = UdpSocket::bind("0.0.0.0:68")?;
+
+    // allow broadcasting
+    socket.set_broadcast(true)?;
+
+    bind_socket_to_device(&socket, ifname)?;
+
+    let dest = "255.255.255.255:67";
+
+    let mut buf = [0u8; 1500];
+    let data = request_packet.encode(&mut buf);
+
+    socket.send_to(data, dest)?;
+
+    println!(
+        "DHCPREQUESST msg sent for IP: {:?}",
+        request_packet.options.iter().find_map(|opt| {
+            if let dhcp4r::options::DhcpOption::RequestedIpAddress(ip) = opt {
+                Some(ip)
+            } else {
+                None
+            }
+        })
+    );
+
+    Ok(())
 }
 
 fn find_saved_networks(
@@ -355,14 +492,15 @@ fn request_host_data(
                 }
             }
             let result: DhcpLease = DhcpLease {
-                ip_addr: ip_addr.unwrap(),
-                subnet_mask: subnet_mask.unwrap(),
-                dns_servers: dns_servers.unwrap(),
-                server_id: server_id.unwrap(),
+                ip_addr,
+                subnet_mask,
+                dns_servers: dns_servers.unwrap_or(vec![]),
+                server_id,
                 lease_duration,
                 renewal_time: lease_duration / 2,
                 rebinding_time: (lease_duration as f64 * 0.875) as u32,
-                gateway: gateway.unwrap(),
+                gateway,
+                offer: msg,
             };
             return Ok(result);
         }

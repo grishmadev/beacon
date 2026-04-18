@@ -1,5 +1,7 @@
 use std::net::Ipv4Addr;
 
+use dhcp4r::packet::Packet;
+
 #[derive(Debug, Default, Clone)]
 pub struct Host {
     pub bssid: Option<String>,
@@ -84,13 +86,15 @@ impl CurrentConnection {
     }
 }
 
+#[derive(Debug)]
 pub struct DhcpLease {
-    pub ip_addr: Ipv4Addr,
-    pub subnet_mask: Ipv4Addr,
-    pub gateway: Ipv4Addr,
+    pub ip_addr: Option<Ipv4Addr>,
+    pub subnet_mask: Option<Ipv4Addr>,
+    pub gateway: Option<Ipv4Addr>,
     pub dns_servers: Vec<Ipv4Addr>,
-    pub server_id: Ipv4Addr,
+    pub server_id: Option<Ipv4Addr>,
     pub lease_duration: u32,
     pub renewal_time: u32,
     pub rebinding_time: u32,
+    pub offer: Packet,
 }

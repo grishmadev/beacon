@@ -4,7 +4,9 @@ use beacon::{
     mac_to_bytes,
     wifi::{self, display_hosts, helper::get_interface},
 };
-fn main() -> Result<(), Box<dyn Error>> {
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     // let status = Command::new("ip")
     //     .args(["link", "set", "wlo1", "up"])
     //     .status()?;
@@ -40,6 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &iface.ifindex.unwrap(),
         ssid,
         Some("kakakakaka"),
-    )?;
+    )
+    .await?;
     Ok(())
 }
