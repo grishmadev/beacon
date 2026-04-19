@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize}
+
 pub mod types;
 pub mod wifi;
 
@@ -11,4 +13,22 @@ pub fn mac_to_bytes(mac: &str) -> [u8; 6] {
             .unwrap();
     }
     res
+}
+/*
+*********************************
+*           GLOBAL TYPES        *
+*********************************
+*/
+
+pub const SOCKET_PATH: &str = "/run/beacon.sock";
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Command {
+    Ping,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum Response {
+    Ok,
+    Error
 }

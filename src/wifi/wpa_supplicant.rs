@@ -396,7 +396,7 @@ fn request_host_data(
             chaddr: mac_address,
             options: vec![
                 DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Discover),
-                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]), // Subnet, Router, DNS, Domain
+                DhcpOption::ParameterRequestList(vec![2, 3, 6, 15, 51]), // Subnet, Router, DNS, Domain
             ],
         };
 
@@ -409,7 +409,7 @@ fn request_host_data(
 
         socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
-        let timeout = Instant::now() + Duration::from_secs(10);
+        let timeout = Instant::now() + Duration::from_secs(3);
 
         let mut subnet_mask: Option<Ipv4Addr> = None;
         let mut ip_addr: Option<Ipv4Addr> = None;
@@ -424,8 +424,6 @@ fn request_host_data(
             }
             match socket.recv_from(&mut res_buf) {
                 Ok((size, _)) => {
-                    // println!("got {} bytes from {}", size, src);
-
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
@@ -457,7 +455,7 @@ fn request_host_data(
                     }
 
                     for option in packet.options {
-                        // checking if offer answered and printing offered IP address
+                        // checking if offer answered
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
