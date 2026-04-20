@@ -42,10 +42,9 @@ impl Host {
 
 #[derive(Debug, Default, PartialEq, Clone, Deserialize, Serialize)]
 pub struct Connection {
-    pub id: String,
     pub ssid: String,
-    pub bsid: String,
-    pub flags: String,
+    pub bssid: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,7 +54,7 @@ pub struct FamilyInfo {
     pub scan_group_id: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Interface {
     pub ifindex: Option<u32>,
     pub ifname: Option<String>,

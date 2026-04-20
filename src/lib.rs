@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Connection, Host};
+use crate::types::{Connection, Host, Interface};
 pub mod executer;
 pub mod functions;
 pub mod types;
@@ -31,9 +31,13 @@ pub enum Command {
     Ping,
     List,
     ListActive,
-    Connect(String),
+    Connect {
+        bssid: String,
+        password: Option<String>,
+        iface: Interface,
+    },
     Disconnect,
-    Info(String), // bsid,
+    Info(String), // bssid,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

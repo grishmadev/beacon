@@ -22,7 +22,7 @@ pub fn add_connection_to_history(connection: Connection) -> Result<(), Box<dyn E
     let mut connections = list_saved_networks()?;
 
     // Check for duplicates before pushing so your list doesn't grow infinitely
-    if !connections.iter().any(|c| c.id == connection.id) {
+    if !connections.iter().any(|c| c.bssid == connection.bssid) {
         connections.push(connection);
         save_to_disk(&connections)?;
     }
@@ -30,11 +30,11 @@ pub fn add_connection_to_history(connection: Connection) -> Result<(), Box<dyn E
     Ok(())
 }
 
-pub fn delete_connection_from_history(bsid: Ipv4Addr) -> Result<(), Box<dyn Error>> {
+pub fn delete_connection_from_history(bssid: Ipv4Addr) -> Result<(), Box<dyn Error>> {
     let mut connections = list_saved_networks()?;
 
     let original_len = connections.len();
-    connections.retain(|c| c.bsid != bsid.to_string());
+    connections.retain(|c| c.bssid != bssid.to_string());
 
     // Only write if something actually changed
     if connections.len() != original_len {

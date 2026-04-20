@@ -13,15 +13,14 @@ use dhcp4r::packet::Packet;
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Type};
 
-use crate::HISTORY_PATH;
-use crate::types::{Connection, DhcpLease};
+use crate::types::DhcpLease;
 
 pub async fn connect(
     mac_address: [u8; 6],
     ifname: &str,
     ifindex: &u32,
     ssid: &str,
-    password: Option<&str>,
+    password: &str,
 ) -> Result<(), Box<dyn Error>> {
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
     let client_path = format!("/tmp/beacon_{}", std::process::id());
@@ -82,7 +81,7 @@ pub async fn connect(
 
     // add network
     // check if password exists
-    let network_id = if let Some(pass) = password {
+    let network_id = {
         let network_id = send_cmd("ADD_NETWORK")?;
 
         let ssid_cmd = format!("SET_NETWORK {} ssid \"{}\"", network_id, ssid);
@@ -92,21 +91,14 @@ pub async fn connect(
         }
 
         // set psk
-        let psk_ok = send_cmd(&format!("SET_NETWORK {} psk \"{}\"", network_id, pass))?;
+        let psk_ok = send_cmd(&format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
         if psk_ok != "OK" {
             return Err(format!("failed to set password. {}", psk_ok).into());
         }
 
         send_cmd("SAVE_CONFIG")?;
         network_id
-    } else {
-        println!("Password not provided. Checking for saved hosts.");
-        match find_saved_networks(&send_cmd, ssid)? {
-            Some(s) => s,
-            None => return Err("Password not provided for new host.".into()),
-        }
     };
-
     println!("found network: {}", network_id);
 
     // disable other networks incase wpa_supplicant connects to any cached network

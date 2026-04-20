@@ -36,7 +36,7 @@ pub fn get_current_connection() -> Result<Option<CurrentConnection>, Box<dyn Err
 pub fn display_hosts(hosts: Vec<Host>) {
     println!(
         "{:<30} {:<20} {:>10} {:>12}",
-        "SSID", "BSID", "Frequency(MHz)", "Signal(dBm)"
+        "SSID", "BSSID", "Frequency(MHz)", "Signal(dBm)"
     );
     println!("{}", "=".repeat(100));
 
