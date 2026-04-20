@@ -1,4 +1,5 @@
 pub mod helper;
+pub mod history;
 pub mod wpa_supplicant;
 use std::error::Error;
 

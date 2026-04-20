@@ -1,4 +1,10 @@
-use std::{error::Error, fs, io::Read, os::unix::net::UnixListener, process::Command};
+use beacon::{Command, Response};
+use std::{
+    error::Error,
+    fs,
+    io::{Read, Write},
+    os::unix::net::UnixListener,
+};
 
 use beacon::{
     SOCKET_PATH, mac_to_bytes,
@@ -7,24 +13,27 @@ use beacon::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Clean up old socket file if it exists
     let _ = fs::remove_file(SOCKET_PATH);
 
     let listener = UnixListener::bind(SOCKET_PATH)?;
-    println!("beacond v0.01 listening on: {}", SOCKET_PATH);
+    println!("Daemon listening on {}", SOCKET_PATH);
 
     loop {
-        let (mut socket, addr) = listener.accept()?;
-        tokio::spawn(async move {
-            let mut buf = [0, 1024];
-            let n = socket.read(&mut buf)?;
+        let (mut socket, _) = listener.accept()?;
 
-            // Desrialie here
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            let n = socket.read(&mut buf).unwrap();
+
             let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-            println!("Recieved Command: {}", cmd);
+            println!("COmmand recieved: {:?}", cmd);
+
+            let response = Response::Ok;
+            let serialized = bincode::serialize(&response).unwrap();
+            socket.write_all(&serialized).unwrap();
         });
     }
-
-    Ok(())
 }
 // async fn main() -> Result<(), Box<dyn Error>> {
 //     // let status = Command::new("ip")

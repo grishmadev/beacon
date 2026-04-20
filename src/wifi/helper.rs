@@ -483,3 +483,5 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
 
     Ok(())
 }
+
+// pub fn save_connection() -> Resul

@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::ffi::CString;
-use std::fs::write;
+use std::fs::{self, write};
 use std::io;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -13,7 +13,8 @@ use dhcp4r::packet::Packet;
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Type};
 
-use crate::types::DhcpLease;
+use crate::HISTORY_PATH;
+use crate::types::{Connection, DhcpLease};
 
 pub async fn connect(
     mac_address: [u8; 6],

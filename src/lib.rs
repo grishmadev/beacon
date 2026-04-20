@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize}
+use serde::{Deserialize, Serialize};
 
+use crate::types::{Connection, Host};
+pub mod executer;
+pub mod functions;
 pub mod types;
 pub mod wifi;
 
@@ -21,14 +24,23 @@ pub fn mac_to_bytes(mac: &str) -> [u8; 6] {
 */
 
 pub const SOCKET_PATH: &str = "/run/beacon.sock";
+pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
     Ping,
+    List,
+    ListActive,
+    Connect(String),
+    Disconnect,
+    Info(String), // bsid,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Response {
     Ok,
-    Error
+    Pong,
+    ActiveHosts(Vec<Host>),
+    SavedConnections(Vec<Connection>),
+    Error(String),
 }

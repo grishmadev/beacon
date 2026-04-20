@@ -1,8 +1,9 @@
 use std::net::Ipv4Addr;
 
 use dhcp4r::packet::Packet;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct Host {
     pub bssid: Option<String>,
     pub ssid: Option<String>,
@@ -37,6 +38,14 @@ impl Host {
     pub fn set_signal(&mut self, signal: u32) {
         self.signal = Some(signal);
     }
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Deserialize, Serialize)]
+pub struct Connection {
+    pub id: String,
+    pub ssid: String,
+    pub bsid: String,
+    pub flags: String,
 }
 
 #[derive(Debug, Clone, Default)]
