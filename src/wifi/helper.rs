@@ -1,19 +1,25 @@
-use crate::types::{CurrentConnection, FamilyInfo, Host, Interface};
+use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
     consts::{
         genl::{CtrlAttr, CtrlAttrMcastGrp, CtrlCmd},
         nl::{GenlId, NlmF, Nlmsg},
+        rtnl::{Arphrd, Iff, Ifla, RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot},
         socket::{Msg, NlFamily},
     },
     genl::{AttrType, AttrTypeBuilder, Genlmsghdr, GenlmsghdrBuilder, Nlattr, NlattrBuilder},
     nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder},
+    rtnl::{Ifinfomsg, IfinfomsgBuilder, RtmsgBuilder},
     socket::NlSocket,
-    types::{Buffer, GenlBuffer},
+    types::{Buffer, GenlBuffer, RtBuffer},
     utils::Groups,
 };
-use std::{error::Error, io::Cursor};
+use std::{
+    error::Error,
+    io::Cursor,
+    path::{self, Path},
+};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
 
@@ -266,21 +272,23 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
     Ok(result)
 }
 
-pub fn get_interface(family_id: u16) -> Result<Vec<Interface>, Box<dyn Error>> {
-    let sock = NlSocket::new(NlFamily::Generic)?;
-    // attribute not needed in request
+pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
+    let sock = NlSocket::new(NlFamily::Route)?;
+    // attribute not needed in requ\t
     // DUMP flag asks for all AP
-    let attr_buffer: GenlBuffer<u16, Buffer> = GenlBuffer::new();
-    let genl_header = GenlmsghdrBuilder::<u8, u16>::default()
-        .cmd(Nl80211Cmd::CmdGetInterface.into())
-        .version(1)
-        .attrs(attr_buffer)
+
+    let ifinfo = IfinfomsgBuilder::default()
+        .ifi_family(RtAddrFamily::Unspecified)
+        .ifi_type(Arphrd::None)
+        .ifi_index(0)
+        .ifi_change(Iff::empty())
+        .ifi_flags(Iff::empty())
         .build()?;
 
     let nl_msg = NlmsghdrBuilder::default()
-        .nl_flags(NlmF::REQUEST | NlmF::DUMP)
-        .nl_type(family_id)
-        .nl_payload(NlPayload::Payload(genl_header))
+        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_type(Rtm::Getlink)
+        .nl_payload(NlPayload::Payload(ifinfo))
         .build()?;
 
     let mut msg_buffer = Cursor::new(Vec::<u8>::new());
@@ -292,50 +300,60 @@ pub fn get_interface(family_id: u16) -> Result<Vec<Interface>, Box<dyn Error>> {
         let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
         let mut cursor = Cursor::new(&recv_buffer[..size]);
 
-        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+        while cursor.position() < size as u64 {
+            let res: Nlmsghdr<Rtm, Ifinfomsg> = Nlmsghdr::from_bytes(&mut cursor)?;
 
-        if let NlPayload::Err(e) = res.nl_payload() {
-            return Err(format!("Kernel Error: {}", e).into());
-        }
-
-        if *res.nl_type() == u16::from(Nlmsg::Done) {
-            break;
-        }
-
-        if let NlPayload::Payload(genl) = res.nl_payload() {
-            let mut iface = Interface::new();
-            for attr in genl.attrs().iter() {
-                let payload = attr.nla_payload().as_ref();
-                match Nl80211Attr::from(*attr.nla_type().nla_type()) {
-                    Nl80211Attr::AttrIfindex => {
-                        if payload.len() >= 4 {
-                            iface.set_ifindex(u32::from_le_bytes(payload[..4].try_into()?));
-                        }
-                    }
-                    Nl80211Attr::AttrIfname => {
-                        let name = String::from_utf8_lossy(payload)
-                            .trim_end_matches('\0')
-                            .to_string();
-                        iface.set_ifname(name);
-                    }
-                    Nl80211Attr::AttrMac => {
-                        if payload.len() >= 6 {
-                            let mac = payload[..6]
-                                .iter()
-                                .map(|b| format!("{b:02x}"))
-                                .collect::<Vec<String>>()
-                                .join(":");
-                            iface.set_mac(mac);
-                        }
-                    }
-                    _ => {} // AttrWiphy, AttrIftype, AttrWdev etc
-                }
+            if let NlPayload::Err(e) = res.nl_payload() {
+                return Err(format!("Kernel Error: {}", e).into());
             }
-            result.push(iface);
+
+            if *res.nl_type() == Rtm::from(libc::NLMSG_DONE as u16) {
+                return Ok(result);
+            }
+
+            if let NlPayload::Payload(link_info) = res.nl_payload() {
+                let mut iface = Interface::new();
+                iface.set_ifindex(*link_info.ifi_index() as u32);
+                for attr in link_info.rtattrs().iter() {
+                    match attr.rta_type() {
+                        Ifla::Ifname => {
+                            let name = attr.get_payload_as_with_len::<String>()?;
+                            iface.set_ifname(name.to_string());
+                            if name.starts_with("wl") || is_wireless(&name) {
+                                iface.set_iftype(InterfaceType::Wireless);
+                            } else if name.starts_with("eth") || name.starts_with("en") {
+                                iface.set_iftype(InterfaceType::Wired);
+                            } else if name.contains("lo") {
+                                iface.set_iftype(InterfaceType::Loopback);
+                            }
+                        }
+                        Ifla::Address => {
+                            let payload = attr.rta_payload().as_ref();
+                            if payload.len() == 6 {
+                                let mac = payload
+                                    .iter()
+                                    .map(|b| format!("{b:02X}"))
+                                    .collect::<Vec<String>>()
+                                    .join(":");
+                                iface.set_mac(mac);
+                            }
+                        }
+                        Ifla::Operstate => {
+                            let payload = attr.rta_payload().as_ref();
+                            println!("operstate: {:#?}", payload);
+                        }
+                        _ => {}
+                    }
+                }
+                result.push(iface);
+            }
         }
     }
+}
 
-    Ok(result)
+fn is_wireless(ifname: &str) -> bool {
+    let ifpath = format!("/sys/class/net/{}/wireless", ifname);
+    Path::new(&ifpath).exists()
 }
 
 pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn Error>> {

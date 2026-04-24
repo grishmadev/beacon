@@ -2,9 +2,9 @@ use std::{error::Error, net::Ipv4Addr};
 
 use crate::{
     mac_to_bytes,
-    types::{Connection, FamilyInfo, Host, Interface},
+    types::{Connection, FamilyInfo, Host, Interface, InterfaceType},
     wifi::{
-        helper::{get_interface, get_scan, trigger_scan},
+        helper::{get_interfaces, get_scan, trigger_scan},
         history::{add_connection_to_history, list_saved_networks},
         wpa_supplicant::{connect, disconnect},
     },
@@ -12,11 +12,14 @@ use crate::{
 
 pub fn list_active_signals(
     family_info: &FamilyInfo,
-    interfaces: Vec<Interface>,
+    interfaces: &Vec<Interface>,
 ) -> Result<Vec<Host>, Box<dyn Error>> {
     let mut result = vec![];
     let family_id = family_info.id;
     for iface in interfaces {
+        if iface.iftype != InterfaceType::Wireless {
+            continue;
+        }
         let ifindex = iface.ifindex.unwrap();
         trigger_scan(family_info, ifindex)?;
         let hosts = get_scan(family_id, ifindex)?;
@@ -32,7 +35,7 @@ pub fn list_all_signals() -> Result<Vec<Connection>, Box<dyn Error>> {
 
 pub async fn connect_to(
     family_info: &FamilyInfo,
-    interfaces: Vec<Interface>,
+    interfaces: &Vec<Interface>,
     iface: &Interface,
     bssid: &str,
     password: &Option<String>,
@@ -86,7 +89,7 @@ pub fn disconnect_connection(ifname: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn list_interfaces(family_id: u16) -> Result<Vec<Interface>, Box<dyn Error>> {
-    let interfaces = get_interface(family_id)?;
+pub fn list_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
+    let interfaces = get_interfaces()?;
     Ok(interfaces)
 }

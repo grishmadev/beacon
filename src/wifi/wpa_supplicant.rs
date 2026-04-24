@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::{self, write};
-use std::io;
+use std::io::{self, Cursor};
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
@@ -10,10 +10,20 @@ use std::time::{Duration, Instant};
 
 use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
+use neli::attr::Attribute;
+use neli::consts::nl::NlmF;
+use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
+use neli::consts::socket::{Msg, NlFamily};
+use neli::nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder};
+use neli::rtnl::{Rtmsg, RtmsgBuilder};
+use neli::socket::NlSocket;
+use neli::types::RtBuffer;
+use neli::utils::Groups;
+use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Type};
 
-use crate::types::DhcpLease;
+use crate::types::{DhcpLease, Interface};
 
 pub async fn connect(
     mac_address: [u8; 6],
@@ -180,6 +190,85 @@ pub fn disconnect(ifname: &str) -> Result<(), Box<dyn Error>> {
             return Ok(());
         };
     }
+}
+
+pub fn find_active_interface(
+    interfaces: &[Interface],
+) -> Result<Option<&Interface>, Box<dyn Error>> {
+    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+
+    let rtmsg = RtmsgBuilder::default()
+        .rtm_family(RtAddrFamily::Inet)
+        .rtm_dst_len(0)
+        .rtm_src_len(0)
+        .rtm_tos(0)
+        .rtm_table(RtTable::Main)
+        .rtm_protocol(Rtprot::Unspec)
+        .rtm_scope(RtScope::Universe)
+        .rtm_type(Rtn::Unicast)
+        .rtattrs(RtBuffer::new())
+        .build()?;
+
+    let nl_msg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_type(Rtm::Getroute)
+        .nl_payload(NlPayload::Payload(rtmsg))
+        .build()?;
+
+    let mut msg_buf = Cursor::new(Vec::<u8>::new());
+    nl_msg.to_bytes(&mut msg_buf)?;
+
+    socket.send(msg_buf.get_ref(), Msg::empty())?;
+
+    // let mut check: Rtmsg;
+
+    let mut recv_buf = [0u8; 4096 * 16];
+    let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
+    let mut res_buf = Cursor::new(&recv_buf[..size]);
+    let res: Nlmsghdr<Rtm, Rtmsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
+
+    if let NlPayload::Err(e) = res.nl_payload() {
+        return Err(format!("Kernel Error: {}", e).into());
+    }
+    // if *res.nl_type() == u16::from(Nlmsg::Done) {
+    //     break;
+    // }
+
+    let mut ifindex: Option<u32> = None;
+    if let NlPayload::Payload(link_info) = res.nl_payload() {
+        // if link_info.ifi_flags.contains(Iff::UP) && !link_info.ifi_flags.contains(Iff::LOOPBACK)
+        // {
+        // }
+        let attrs = link_info.rtattrs();
+        for attr in attrs.iter() {
+            // let res_buf = attr.rta_payload();
+            match attr.rta_type() {
+                Rta::Table => {
+                    let table = attr.get_payload_as::<u8>()?;
+                    println!("table: {:?}", table);
+                }
+                Rta::Priority => {
+                    let priority = attr.get_payload_as::<u16>()?;
+                    println!("priority: {:?}", priority);
+                }
+                Rta::Oif => {
+                    ifindex = Some(attr.get_payload_as::<u32>()?);
+                    println!("Interface Index (OIF): {:?}", ifindex);
+                }
+                Rta::Gateway => {
+                    let gateway = attr.get_payload_as::<[u8; 4]>()?;
+                    println!("Gateway IP: {:?}", gateway);
+                }
+                Rta::Prefsrc => {
+                    let src = attr.get_payload_as::<[u8; 4]>()?;
+                    println!("Preferred Source IP: {:?}", src);
+                }
+                _ => {}
+            }
+        }
+    }
+    let result = interfaces.iter().find(|iface| iface.ifindex == ifindex);
+    Ok(result)
 }
 
 async fn apply_network_config(

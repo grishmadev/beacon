@@ -54,11 +54,21 @@ pub struct FamilyInfo {
     pub scan_group_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+pub enum InterfaceType {
+    Wireless,
+    Wired,
+    Loopback,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct Interface {
     pub ifindex: Option<u32>,
     pub ifname: Option<String>,
     pub mac: Option<String>,
+    pub iftype: InterfaceType,
 }
 
 impl Interface {
@@ -76,6 +86,10 @@ impl Interface {
 
     pub fn set_mac(&mut self, mac: String) {
         self.mac = Some(mac);
+    }
+
+    pub fn set_iftype(&mut self, iftype: InterfaceType) {
+        self.iftype = iftype;
     }
 }
 

@@ -29,8 +29,9 @@ pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
     Ping,
-    List,
-    ListActive,
+    ListConnections,
+    ListActiveConnections,
+    ListInterfaces,
     Connect {
         bssid: String,
         password: Option<String>,
@@ -45,6 +46,7 @@ pub enum Response {
     Ok,
     Pong,
     ActiveHosts(Vec<Host>),
-    SavedConnections(Vec<Connection>),
+    SavedHosts(Vec<Connection>),
+    AllInterfaces(Vec<Interface>),
     Error(String),
 }
