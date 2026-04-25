@@ -1,30 +1,88 @@
+use ratatui::{
+    Terminal,
+    crossterm::{
+        event::{self, DisableMouseCapture, Event, KeyCode},
+        execute,
+        terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    },
+    layout::{Constraint, Direction, Layout},
+    prelude::CrosstermBackend,
+    style::{Color, Style},
+    widgets::{Block, Borders, List, Paragraph, canvas::Line},
+};
 use std::{
     error::Error,
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::unix::net::UnixStream,
 };
 
-use beacon::{Command, Response, SOCKET_PATH};
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut socket = UnixStream::connect(SOCKET_PATH)?;
+    enable_raw_mode()?;
+    let stdout = io::stdout();
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    loop {
+        terminal.draw(|f| {
+            let size = f.area();
+            // let block = Block::default().title("Beacon").borders(Borders::ALL);
+            // let hello = Paragraph::new("Hello World!").block(block);
+            // f.render_widget(hello, size);
+            let chunks = Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(10),
+                    Constraint::Length(3),
+                ])
+                .split(size);
 
-    let cmd = Command::ListActiveConnections;
-    println!("Command sent: {:?}", cmd);
-    let serialized = bincode::serialize(&cmd)?;
-    socket.write_all(&serialized)?;
+            let header = Paragraph::new("BEACON")
+                .style(Style::default().fg(ratatui::style::Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title("Status"));
+            f.render_widget(header, chunks[0]);
+            let list_items = [
+                "lo      [UP]    127.0.0.1",
+                "eth0    [DOWN]  NO_CARRIER",
+                "wlo1    [UP]    192.168.1.5",
+            ];
 
-    let mut buf = [0; 1024];
-    let n = socket.read(&mut buf)?;
-    let response: Response = bincode::deserialize(&buf[..n])?;
+            let list = List::new(list_items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Network Interface"),
+                )
+                .highlight_style(Style::default().bg(Color::Blue));
 
-    println!("Response: {:#?}", response);
+            f.render_widget(list, chunks[1]);
+            let paragraph = Paragraph::new("Thanks for using beacon.")
+                .block(Block::default().borders(Borders::ALL));
 
-    // let family_info = get_family_info()?;
-    // let family_id = family_info.id;
-    // let interfaces = list_interfaces(family_id)?;
-    // println!("interfaces: {:#?}", interfaces);
-    // let active = find_active_interface(&interfaces)?;
-    // println!("active interface: {:#?}", active);
+            let para2 =
+                Paragraph::new("Paragraph 0.").block(Block::default().borders(Borders::ALL));
+
+            let sec_chunk = Layout::default()
+                .direction(Direction::Horizontal)
+                .margin(0)
+                .spacing(1)
+                .constraints([Constraint::Percentage(50), Constraint::Min(10)])
+                .split(chunks[2]);
+            f.render_widget(paragraph, sec_chunk[1]);
+            f.render_widget(para2, sec_chunk[0]);
+        })?;
+
+        if let Event::Key(key) = event::read()?
+            && let KeyCode::Char('q') = key.code
+        {
+            break;
+        }
+    }
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     Ok(())
 }

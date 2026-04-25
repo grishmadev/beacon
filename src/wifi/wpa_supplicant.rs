@@ -230,15 +230,9 @@ pub fn find_active_interface(
     if let NlPayload::Err(e) = res.nl_payload() {
         return Err(format!("Kernel Error: {}", e).into());
     }
-    // if *res.nl_type() == u16::from(Nlmsg::Done) {
-    //     break;
-    // }
 
     let mut ifindex: Option<u32> = None;
     if let NlPayload::Payload(link_info) = res.nl_payload() {
-        // if link_info.ifi_flags.contains(Iff::UP) && !link_info.ifi_flags.contains(Iff::LOOPBACK)
-        // {
-        // }
         let attrs = link_info.rtattrs();
         for attr in attrs.iter() {
             // let res_buf = attr.rta_payload();

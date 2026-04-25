@@ -179,7 +179,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
             return Err(format!("Kernel Error: {}", e).into());
         }
 
-        if u16::from(*res.nl_type()) == u16::from(Nlmsg::Done) {
+        if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
             break;
         }
 
@@ -264,6 +264,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                         }
                         // add target to result
                     }
+                    println!("host: {:#?}", target);
                     result.push(target);
                 }
             }
@@ -307,7 +308,7 @@ pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
                 return Err(format!("Kernel Error: {}", e).into());
             }
 
-            if *res.nl_type() == Rtm::from(libc::NLMSG_DONE as u16) {
+            if u16::from(*res.nl_type()).to_string() == libc::NLMSG_DONE.to_string() {
                 return Ok(result);
             }
 
@@ -383,7 +384,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
             return Err(format!("Kernel Error: {}", e).into());
         }
 
-        if *res.nl_type() == u16::from(Nlmsg::Done) {
+        if *res.nl_type().to_string() == libc::NLMSG_DONE.to_string() {
             break;
         }
 
