@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Connection, Host, Interface};
-pub mod executer;
-pub mod functions;
+pub mod backend;
+pub mod frontend;
 pub mod types;
 pub mod wifi;
 

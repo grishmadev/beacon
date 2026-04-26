@@ -1,4 +1,10 @@
-use beacon::{Command, Response, SOCKET_PATH};
+use crate::{Command, Response, SOCKET_PATH};
+pub mod app;
+use std::{
+    error::Error,
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+};
 
 pub fn command(cmd: Command) -> Result<Response, Box<dyn Error>> {
     let mut socket = UnixStream::connect(SOCKET_PATH)?;

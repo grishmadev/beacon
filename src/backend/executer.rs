@@ -2,7 +2,9 @@ use std::error::Error;
 
 use crate::{
     Command, Response,
-    functions::{connect_to, disconnect_connection, list_active_signals, list_all_signals},
+    backend::functions::{
+        connect_to, disconnect_connection, list_active_signals, list_all_signals,
+    },
     wifi::{
         helper::{get_family_info, get_interfaces},
         wpa_supplicant::find_active_interface,

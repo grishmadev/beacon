@@ -1,7 +1,6 @@
 use beacon::{
     Command, Response,
-    executer::execute,
-    functions::list_active_signals,
+    backend::{executer::execute, functions::list_active_signals},
     wifi::helper::{get_family_info, get_interfaces},
 };
 use std::{
