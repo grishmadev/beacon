@@ -16,7 +16,6 @@ serde_json = "1.0"                                 # For human-readable text
 bincode = "1.0"                                    # For fast, small binary (better for Daemons)
 neli = { path = "/home/grishma/Build/neli/" }
 ratatui = "0.30.0"
-color-eyre = "0.6.5"
 
 
 [[bin]]

@@ -3,7 +3,9 @@ use ratatui::{
     widgets::ListState,
 };
 
-#[derive(Default, Debug)]
+use crate::types::Host;
+
+#[derive(Default, Debug, PartialEq)]
 pub enum Tab {
     #[default]
     Interface,
@@ -12,7 +14,8 @@ pub enum Tab {
 
 #[derive(Default)]
 pub struct App {
-    pub interfaces: Vec<crate::types::Interface>,
+    pub interfaces: Vec<String>,
+    pub hosts: Vec<Host>,
     pub active_tab: Tab,
     pub active_index: ListState, // starts from 0
     pub is_running: bool,
@@ -22,6 +25,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             interfaces: vec![],
+            hosts: vec![],
             active_tab: Tab::Interface,
             active_index: ListState::default(),
             is_running: true,

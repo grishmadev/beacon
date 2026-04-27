@@ -1,5 +1,6 @@
 use crate::{Command, Response, SOCKET_PATH};
 pub mod app;
+pub mod control;
 use std::{
     error::Error,
     io::{Read, Write},
@@ -20,3 +21,5 @@ pub fn command(cmd: Command) -> Result<Response, Box<dyn Error>> {
     println!("Response: {:#?}", response);
     Ok(response)
 }
+
+// pub fn handle_keys(cmd)

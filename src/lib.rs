@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fs::File;
 
 use crate::types::{Connection, Host, Interface};
 pub mod backend;
@@ -50,3 +52,26 @@ pub enum Response {
     AllInterfaces(Vec<Interface>),
     Error(String),
 }
+
+// pub mod debug {
+//     use std::error::Error;
+//     use std::io::Read;
+//     use std::os::unix::fs::FileExt;
+//     use std::{
+//         fs::{self, File},
+//         path::Path,
+//     };
+//
+//     pub fn write(str: &str) -> Result<(), Box<dyn Error>> {
+//         let path = "./debug.txt";
+//         if !Path::new(path).exists() {
+//             fs::File::create(path)?;
+//         }
+//         let mut file = File::open(path)?;
+//         let mut content: String = "".to_string();
+//         let endpos = content.len();
+//         file.read_to_string(&mut content)?;
+//         file.write_at(str.as_bytes(), endpos as u64)?;
+//         Ok(())
+//     }
+// }

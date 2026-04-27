@@ -341,7 +341,7 @@ pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
                         }
                         Ifla::Operstate => {
                             let payload = attr.rta_payload().as_ref();
-                            println!("operstate: {:#?}", payload);
+                            // println!("operstate: {:#?}", payload);
                         }
                         _ => {}
                     }
