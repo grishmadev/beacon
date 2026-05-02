@@ -239,23 +239,23 @@ pub fn find_active_interface(
             match attr.rta_type() {
                 Rta::Table => {
                     let table = attr.get_payload_as::<u8>()?;
-                    println!("table: {:?}", table);
+                    // println!("table: {:?}", table);
                 }
                 Rta::Priority => {
                     let priority = attr.get_payload_as::<u16>()?;
-                    println!("priority: {:?}", priority);
+                    // println!("priority: {:?}", priority);
                 }
                 Rta::Oif => {
                     ifindex = Some(attr.get_payload_as::<u32>()?);
-                    println!("Interface Index (OIF): {:?}", ifindex);
+                    // println!("Interface Index (OIF): {:?}", ifindex);
                 }
                 Rta::Gateway => {
                     let gateway = attr.get_payload_as::<[u8; 4]>()?;
-                    println!("Gateway IP: {:?}", gateway);
+                    // println!("Gateway IP: {:?}", gateway);
                 }
                 Rta::Prefsrc => {
                     let src = attr.get_payload_as::<[u8; 4]>()?;
-                    println!("Preferred Source IP: {:?}", src);
+                    // println!("Preferred Source IP: {:?}", src);
                 }
                 _ => {}
             }

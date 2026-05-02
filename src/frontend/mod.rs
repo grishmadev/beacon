@@ -1,6 +1,7 @@
 use crate::{Command, Response, SOCKET_PATH};
 pub mod app;
 pub mod control;
+pub mod ui;
 use std::{
     error::Error,
     io::{Read, Write},

@@ -32,7 +32,7 @@ pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 pub enum Command {
     Ping,
     ListConnections,
-    ListActiveConnections,
+    ListActiveConnections(Interface),
     ListInterfaces,
     Connect {
         bssid: String,

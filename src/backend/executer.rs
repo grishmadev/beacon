@@ -25,8 +25,8 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
             Response::SavedHosts(hosts)
         }
 
-        Command::ListActiveConnections => {
-            let connections = list_active_signals(&family_info, &interfaces)?;
+        Command::ListActiveConnections(iface) => {
+            let connections = list_active_signals(&family_info, iface.clone())?;
             Response::ActiveHosts(connections)
         }
 

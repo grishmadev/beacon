@@ -264,7 +264,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                         }
                         // add target to result
                     }
-                    println!("host: {:#?}", target);
+                    // println!("host: {:#?}", target);
                     result.push(target);
                 }
             }
@@ -488,7 +488,7 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
             match Nl80211Cmd::from(*genl.cmd()) {
                 Nl80211Cmd::CmdNewScanResults => {
                     // scanning finished, new results in cache
-                    println!("Scan Complete...");
+                    // println!("Scan Complete...");
                     break;
                 }
                 Nl80211Cmd::CmdScanAborted => {

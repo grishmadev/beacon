@@ -32,12 +32,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let n = socket.read(&mut buf).unwrap();
 
             let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-            println!("COmmand recieved: {:?}", cmd);
+            println!("Command recieved: {:#?}", cmd);
 
             let response = match execute(&cmd).await {
                 Ok(s) => s,
                 Err(e) => Response::Error(e.to_string()),
             };
+            println!("Response: {:#?}", response);
             let serialized = bincode::serialize(&response).unwrap();
             socket.write_all(&serialized).unwrap();
         });
