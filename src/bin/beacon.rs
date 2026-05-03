@@ -1,6 +1,7 @@
 use beacon::{
     Command, Response,
     backend::executer::execute,
+    debug::write,
     frontend::{
         app::{App, Tab},
         ui::set_layouts,
@@ -24,7 +25,12 @@ use std::{
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
+    if let Err(e) = main_loop().await {
+        let _ = write(e.to_string());
+    };
+}
+async fn main_loop() -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -38,9 +44,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tokio::spawn(async move {
         while let Ok(cmd) = cmdrx.recv() {
-            let response = match execute(&cmd).await {
-                Ok(r) => r,
-                Err(e) => Response::Error(e.to_string()),
+            let response = match cmd {
+                Command::Notification(msg) => Response::Notification(msg),
+                _ => match execute(&cmd).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        println!("Error: {:?}", e.to_string());
+                        Response::Error(e.to_string())
+                    }
+                },
             };
             let _ = ressx.send(response);
         }
@@ -59,10 +71,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             set_layouts(&mut app, f);
         })?;
 
-        // if let response = resrx
-
         if app.active_tab == Tab::Interface
-            && let Some(idx) = app.active_index.selected()
+            && let Some(idx) = app.iface_index.selected()
             && let Some(active_iface) = app.interfaces.get(idx)
             && last_active_interface != active_iface.ifname
         {
@@ -76,17 +86,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app.interfaces = ifaces;
                 }
                 Response::ActiveHosts(hosts) => {
-                    println!("hosts: {:#?}", hosts);
                     app.hosts = hosts;
                 }
+                Response::Notification(msg) => app.notification = Some(msg),
                 _ => {}
             }
         }
+
         if event::poll(Duration::from_millis(10))? {
             if let Event::Key(key) = event::read()? {
                 app.handle_keys(key);
-                if key.code == KeyCode::Char('q') {
-                    break;
+                match key.code {
+                    KeyCode::Char('q') => {
+                        break;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(_) = app.hosts.iter().find(|host| host.is_connected) {
+                            app.connect(&cmdsx, Some("kakakaka".into()));
+                        } else {
+                            let _ = cmdsx.send(Command::Disconnect);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

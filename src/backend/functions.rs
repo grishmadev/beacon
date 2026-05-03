@@ -16,14 +16,18 @@ pub fn list_active_signals(
 ) -> Result<Vec<Host>, Box<dyn Error>> {
     let mut result = vec![];
     let family_id = family_info.id;
-    println!("interface: {:?}", interface);
     if interface.iftype != InterfaceType::Wireless {
         return Ok(Vec::new());
     }
     let ifindex = interface.ifindex.unwrap();
     trigger_scan(family_info, ifindex)?;
     let hosts = get_scan(family_id, ifindex)?;
-    println!("result: {:#?}", hosts);
+    // let logs = format!(
+    //     "hosts for {:?} {:?}",
+    //     interface.ifname.clone(),
+    //     hosts.clone()
+    // );
+    // println!("{}", logs);
     result.extend(hosts);
     Ok(result)
 }

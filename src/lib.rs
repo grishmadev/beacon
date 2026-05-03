@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs::File;
 
 use crate::types::{Connection, Host, Interface};
 pub mod backend;
+pub mod debug;
 pub mod frontend;
 pub mod types;
 pub mod wifi;
@@ -39,6 +38,7 @@ pub enum Command {
         password: Option<String>,
         iface: Interface,
     },
+    Notification(String),
     Disconnect,
     Info(String), // bssid,
 }
@@ -50,6 +50,7 @@ pub enum Response {
     ActiveHosts(Vec<Host>),
     SavedHosts(Vec<Connection>),
     AllInterfaces(Vec<Interface>),
+    Notification(String),
     Error(String),
 }
 

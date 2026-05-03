@@ -1,8 +1,8 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Block, BorderType, Borders, List},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style, Stylize},
+    widgets::{Block, BorderType, Borders, Clear, List, Paragraph},
 };
 
 use crate::frontend::app::{App, Tab};
@@ -44,12 +44,43 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .block(Block::default().borders(Borders::ALL).title(" Hosts "))
         .highlight_style(Style::default().bg(Color::Yellow));
 
+    if let Some(ref msg) = app.notification {
+        let block = Block::new()
+            .title(" Notification ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .fg(Color::Yellow);
+
+        let area = centered_rect(60, 20, rect.area());
+
+        rect.render_widget(Clear, area);
+        rect.render_widget(Paragraph::new(msg.to_string()).block(block), area);
+    }
     // rendering active and non-active tab based on condition
     if app.active_tab == Tab::Interface {
-        rect.render_stateful_widget(interfaces_block, chunks[0], &mut app.active_index);
+        rect.render_stateful_widget(interfaces_block, chunks[0], &mut app.iface_index);
         rect.render_widget(hosts_block, chunks[1]);
     } else {
-        rect.render_stateful_widget(hosts_block, chunks[1], &mut app.active_index);
+        rect.render_stateful_widget(hosts_block, chunks[1], &mut app.host_index);
         rect.render_widget(interfaces_block, chunks[0]);
     }
+}
+
+pub fn centered_rect(percent_x: u16, percent_y: u16, rect: Rect) -> Rect {
+    let notification = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(rect);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(notification[1])[1]
 }
