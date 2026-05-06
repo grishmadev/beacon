@@ -28,7 +28,11 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
 
         Command::ListActiveConnections(iface) => {
             let connections = list_active_signals(&family_info, iface.clone())?;
-            Response::ActiveHosts(connections)
+            if let Some(ifname) = iface.ifname.clone() {
+                Response::ActiveHosts(ifname, connections)
+            } else {
+                Response::Error("Unknown Interface.".into())
+            }
         }
 
         Command::ListInterfaces => Response::AllInterfaces(interfaces),
@@ -39,7 +43,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
             password,
         } => {
             connect_to(&family_info, &interfaces, iface, bssid, password).await?;
-            Response::Ok
+            Response::Connected
         }
 
         Command::Disconnect => {

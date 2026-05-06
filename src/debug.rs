@@ -6,7 +6,7 @@ use std::{
 };
 
 pub fn write(logs: String) -> Result<(), Box<dyn Error>> {
-    let path_str = "debug.txt";
+    let path_str = "./debug.txt";
     let path = Path::new(path_str);
     if !path.exists() {
         File::create(path_str)?;

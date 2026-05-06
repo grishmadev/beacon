@@ -23,6 +23,7 @@ use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Type};
 
+use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
 
 pub async fn connect(
@@ -51,8 +52,6 @@ pub async fn connect(
     })?;
 
     let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
-        println!("sending cmd: {}", cmd);
-
         skt.send(cmd.as_bytes())?;
 
         let mut buf = [0u8; 1024 * 4];
@@ -63,7 +62,7 @@ pub async fn connect(
             if reply.starts_with('<') {
                 continue;
             }
-            println!("result: {}", reply);
+            cwrite(format!("result: {}", reply));
             return Ok(reply);
         }
         Ok("FAIL".to_string())
@@ -109,7 +108,7 @@ pub async fn connect(
         send_cmd("SAVE_CONFIG")?;
         network_id
     };
-    println!("found network: {}", network_id);
+    cwrite(format!("found network: {}", network_id));
 
     // disable other networks incase wpa_supplicant connects to any cached network
     let disable_ok = send_cmd("DISABLE_NETWORK all")?;
@@ -122,7 +121,7 @@ pub async fn connect(
         return Err(format!("Couldn't connect to {}. {}", ssid, select_ok).into());
     }
 
-    println!("Connecting to {}..", ssid);
+    cwrite(format!("Connecting to {}..", ssid));
     let mut recv_buffer = [0u8; 1024 * 4];
 
     loop {
@@ -133,9 +132,9 @@ pub async fn connect(
                 let event = String::from_utf8_lossy(&recv_buffer[..size])
                     .trim()
                     .to_string();
-                println!("event: {}", event);
+                cwrite(format!("event: {}", event));
                 if event.contains("CTRL-EVENT-CONNECTED") {
-                    println!("Connected.");
+                    cwrite("Connected.".into());
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
                     send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
@@ -149,7 +148,7 @@ pub async fn connect(
         }
     }
     let host_data = request_host_data(ifindex, ifname, mac_address)?;
-    println!("host data: {:#?}", host_data);
+    cwrite(format!("host data: {:#?}", host_data));
 
     send_dhcp_request(&host_data.offer, host_data.ip_addr.unwrap(), ifname)?;
 
@@ -239,23 +238,23 @@ pub fn find_active_interface(
             match attr.rta_type() {
                 Rta::Table => {
                     let table = attr.get_payload_as::<u8>()?;
-                    // println!("table: {:?}", table);
+                    // cwrite("table: {:?}", table);
                 }
                 Rta::Priority => {
                     let priority = attr.get_payload_as::<u16>()?;
-                    // println!("priority: {:?}", priority);
+                    // cwrite("priority: {:?}", priority);
                 }
                 Rta::Oif => {
                     ifindex = Some(attr.get_payload_as::<u32>()?);
-                    // println!("Interface Index (OIF): {:?}", ifindex);
+                    // cwrite("Interface Index (OIF): {:?}", ifindex);
                 }
                 Rta::Gateway => {
                     let gateway = attr.get_payload_as::<[u8; 4]>()?;
-                    // println!("Gateway IP: {:?}", gateway);
+                    // cwrite("Gateway IP: {:?}", gateway);
                 }
                 Rta::Prefsrc => {
                     let src = attr.get_payload_as::<[u8; 4]>()?;
-                    // println!("Preferred Source IP: {:?}", src);
+                    // cwrite("Preferred Source IP: {:?}", src);
                 }
                 _ => {}
             }
@@ -302,11 +301,9 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
     for dns in dns_servers {
         config_lines.push(format!("nameserver {}", dns));
     }
-    println!("dns: {}", config_lines.join("\n"));
+    cwrite(format!("dns: {}", config_lines.join("\n")));
     match write("/etc/resolv.conf", config_lines.join("\n")) {
-        Ok(_) => {
-            println!("DNS set!")
-        }
+        Ok(_) => cwrite("DNS set!".into()),
         Err(e) => {
             return Err(e.into());
         }
@@ -323,7 +320,7 @@ fn send_dhcp_request(
 
     // message type requesst
     options.push(DhcpOption::DhcpMessageType(MessageType::Request));
-    println!("offered ip address: {:?}", offer.yiaddr);
+    cwrite(format!("offered ip address: {:?}", offer.yiaddr));
 
     // requested ip address (optins 50)
     options.push(DhcpOption::RequestedIpAddress(offered_ip));
@@ -371,7 +368,7 @@ fn send_dhcp_request(
 
     socket.send_to(data, dest)?;
 
-    println!(
+    cwrite(format!(
         "DHCPREQUESST msg sent for IP: {:?}",
         request_packet.options.iter().find_map(|opt| {
             if let dhcp4r::options::DhcpOption::RequestedIpAddress(ip) = opt {
@@ -379,8 +376,8 @@ fn send_dhcp_request(
             } else {
                 None
             }
-        })
-    );
+        }),
+    ));
 
     Ok(())
 }
@@ -422,7 +419,6 @@ fn request_host_data(
     ifname: &str,
     mac_address: [u8; 6],
 ) -> Result<DhcpLease, Box<dyn Error>> {
-    println!("checkpoint");
     // point it at global broadcast address
     // socket used only for sending signals
     let broadcast_addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
@@ -479,7 +475,6 @@ fn request_host_data(
         let mut buf = [0u8; 1500];
         let slice = msg.encode(&mut buf);
 
-        println!("checkpoint 2");
         // sending the socket
         send_socket.send_to(slice, broadcast_addr)?;
 
@@ -517,14 +512,17 @@ fn request_host_data(
                     if initialized_data[42] != 2 {
                         continue;
                     }
-                    println!("found right packet");
+                    cwrite("found right packet".to_string());
 
                     // skipping ethernet, ip, udp headers
                     let dhcp_data = &initialized_data[42..];
                     let packet =
                         Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
 
-                    println!("packet xid: {:?}, msg xid: {:?}", packet.xid, msg.xid);
+                    cwrite(format!(
+                        "packet xid: {:?}, msg xid: {:?}",
+                        packet.xid, msg.xid
+                    ));
 
                     if packet.xid != msg.xid {
                         continue;
@@ -535,11 +533,11 @@ fn request_host_data(
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
-                                    println!("Offered IP: {:?}", packet.yiaddr);
+                                    cwrite(format!("Offered IP: {:?}", packet.yiaddr));
                                     ip_addr = Some(packet.yiaddr);
                                 }
                                 _ => {
-                                    println!("Didnt find desired message.");
+                                    cwrite("Didnt find desired message.".into());
                                 }
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
@@ -557,11 +555,11 @@ fn request_host_data(
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // no packets keep waiting.
-                    // println!("Getting WouldBlock Errors");
+                    // cwrite("Getting WouldBlock Errors");
                     continue;
                 }
                 Err(e) => {
-                    println!("Kernel Error: {:?}", e);
+                    // cwrite("Kernel Error: {:?}", e);
                     return Err(e.into());
                 }
             }
@@ -578,10 +576,10 @@ fn request_host_data(
             };
             return Ok(result);
         }
-        println!(
+        cwrite(format!(
             "No reply, Retrying... Attempts left {}",
-            total_retries - attempt
-        );
+            total_retries - attempt,
+        ));
     }
     Err("Failed after retry.".into())
 }

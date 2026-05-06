@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use dhcp4r::packet::Packet;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Host {
     pub bssid: Option<String>,
     pub ssid: Option<String>,
@@ -54,7 +54,7 @@ pub struct FamilyInfo {
     pub scan_group_id: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
 pub enum InterfaceType {
     Wireless,
     Wired,
@@ -63,7 +63,7 @@ pub enum InterfaceType {
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
 pub struct Interface {
     pub ifindex: Option<u32>,
     pub ifname: Option<String>,

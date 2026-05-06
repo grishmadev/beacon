@@ -1,3 +1,4 @@
+use crate::debug::write;
 use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
 use neli::{
     FromBytes, ToBytes,
@@ -173,14 +174,14 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
     loop {
         let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
         let mut cursor = Cursor::new(&recv_buffer[..size]);
-        let res: Nlmsghdr<GenlId, Genlmsghdr<CtrlCmd, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
         if let NlPayload::Err(e) = res.nl_payload() {
             return Err(format!("Kernel Error: {}", e).into());
         }
 
-        if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
-            break;
+        if *res.nl_type() == libc::NLMSG_DONE as u16 {
+            return Ok(result);
         }
 
         if let NlPayload::Payload(genl) = res.nl_payload() {
@@ -196,7 +197,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                     let mut target = Host::new();
 
                     while cursor.position() < bss_bytes.len() as u64 {
-                        if let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut cursor) {
+                        while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut cursor) {
                             match Nl80211Bss::from(*nested.nla_type().nla_type()) {
                                 Nl80211Bss::BssBssid => {
                                     let bytes = nested.nla_payload().as_ref();
@@ -243,7 +244,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                                                 String::from_utf8_lossy(&ies[i + 2..i + 2 + len])
                                                     .to_string();
                                             target.set_ssid(ssid);
-                                            break;
+                                            // break;
                                         }
                                         i += 2 + len;
                                     }
@@ -259,9 +260,10 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 
                                 _ => {}
                             }
-                        } else {
-                            break;
                         }
+                        // else {
+                        //     break;
+                        // }
                         // add target to result
                     }
                     // println!("host: {:#?}", target);
@@ -270,7 +272,6 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
             }
         }
     }
-    Ok(result)
 }
 
 pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
@@ -427,7 +428,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     }
 
                     _ => {
-                        println!("{:#?}", String::from_utf8_lossy(payload))
+                        write(format!("{:#?}", String::from_utf8_lossy(payload)));
                     }
                 }
             }

@@ -1,3 +1,8 @@
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -5,7 +10,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, Paragraph},
 };
 
-use crate::frontend::app::{App, Tab};
+use crate::{
+    debug::{self, write},
+    frontend::app::{App, Tab},
+};
 
 pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     let size = rect.area();
@@ -24,7 +32,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .split(inner_main);
 
     let iface_vec = app
-        .interfaces
+        .get_ifaces()
         .iter()
         .map(|f| f.ifname.as_ref().unwrap_or(&"---".to_string()).to_string())
         .collect::<Vec<String>>();
@@ -35,13 +43,52 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .highlight_symbol(">>");
 
     let hosts_vec = app
-        .hosts
+        .get_hosts()
         .iter()
         .map(|f| f.ssid.as_ref().unwrap_or(&"---".to_string()).to_string())
         .collect::<Vec<String>>();
+    // let mut wrote = false;
+    // if !hosts_vec.is_empty() {
+    //     wrote = true;
+    //     write(format!("hosts: {:#?}", hosts_vec));
+    // };
+    // let hostc = hosts_vec.clone();
+    // if wrote {
+    //     thread::spawn(move || {
+    //         loop {
+    //             thread::sleep(Duration::from_secs(2));
+    //             write(format!("hosts after: {:#?}", hostc));
+    //         }
+    //     });
+    // };
+    //
+    //
+    let hosts_vec = if let Some(target) = app
+        .group
+        .iter()
+        .find(|f| f.iface.ifname == Some("wlo1".to_string()))
+    {
+        target
+            .hosts
+            .clone()
+            .iter()
+            .map(|f| f.ssid.as_ref().unwrap_or(&"---".to_string()).to_string())
+            .collect::<Vec<String>>()
+    } else {
+        vec![]
+    };
+    let host_count = if hosts_vec.is_empty() {
+        "No Hosts".into()
+    } else {
+        hosts_vec.len().to_string()
+    };
 
     let hosts_block = List::new(hosts_vec)
-        .block(Block::default().borders(Borders::ALL).title(" Hosts "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Hosts ({}) ", host_count)),
+        )
         .highlight_style(Style::default().bg(Color::Yellow));
 
     if let Some(ref msg) = app.notification {

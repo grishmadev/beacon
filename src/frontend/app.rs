@@ -7,45 +7,63 @@ use ratatui::{
 
 use crate::{
     Command,
-    backend::functions::disconnect_connection,
+    debug::write,
     types::{Host, Interface},
 };
 
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub enum Tab {
     #[default]
     Interface,
     Hosts,
 }
 
-#[derive(Default)]
-pub struct App {
-    pub interfaces: Vec<Interface>,
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceList {
+    pub iface: Interface,
     pub hosts: Vec<Host>,
+}
+#[derive(Debug, Clone)]
+pub struct App {
+    pub group: Vec<InterfaceList>,
     pub active_tab: Tab,
     pub iface_index: ListState, // starts from 0
     pub host_index: ListState,
     pub notification: Option<String>,
-    pub is_running: bool,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            interfaces: vec![],
-            hosts: vec![],
+            group: vec![],
             active_tab: Tab::Interface,
             iface_index: ListState::default(),
             host_index: ListState::default(),
             notification: None,
-            is_running: true,
+        }
+    }
+    pub fn get_ifaces(&mut self) -> Vec<Interface> {
+        self.group
+            .iter()
+            .map(|i| i.iface.clone())
+            .collect::<Vec<Interface>>()
+    }
+    pub fn get_hosts(&mut self) -> Vec<Host> {
+        if let Some(idx) = self.iface_index.selected()
+            && let Some(ifls) = self.group.get(idx)
+        {
+            ifls.hosts.clone()
+        } else {
+            vec![]
         }
     }
     fn next(&mut self) {
+        let ifaces = self.get_ifaces();
+        let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
-                    if s == self.interfaces.len() - 1 {
+                    if s == ifaces.len() - 1 {
                         Some(0)
                     } else {
                         Some(s + 1)
@@ -53,14 +71,14 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i >= Some(self.interfaces.len()) {
+            if i >= Some(ifaces.len()) {
                 i = None;
             };
             self.iface_index.select(i);
         } else if self.active_tab == Tab::Hosts {
             let mut i = match self.host_index.selected() {
                 Some(s) => {
-                    if s == self.hosts.len() - 1 {
+                    if s == hosts.len() - 1 {
                         Some(0)
                     } else {
                         Some(s + 1)
@@ -68,7 +86,7 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i >= Some(self.hosts.len()) {
+            if i >= Some(hosts.len()) {
                 i = None;
             };
             self.host_index.select(i);
@@ -76,18 +94,20 @@ impl App {
     }
 
     fn previous(&mut self) {
+        let ifaces = self.get_ifaces();
+        let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
                     if s == 0 {
-                        Some(self.interfaces.len() - 1)
+                        Some(ifaces.len() - 1)
                     } else {
                         Some(s - 1)
                     }
                 }
                 None => Some(0),
             };
-            if i > Some(self.interfaces.len()) {
+            if i > Some(ifaces.len()) {
                 i = None;
             };
             self.iface_index.select(i);
@@ -95,14 +115,14 @@ impl App {
             let mut i = match self.host_index.selected() {
                 Some(s) => {
                     if s == 0 {
-                        Some(self.hosts.len() - 1)
+                        Some(hosts.len() - 1)
                     } else {
                         Some(s - 1)
                     }
                 }
                 None => Some(0),
             };
-            if i > Some(self.hosts.len()) {
+            if i > Some(hosts.len()) {
                 i = None;
             };
             self.host_index.select(i);
@@ -110,19 +130,22 @@ impl App {
     }
     fn toggle_tab(&mut self) {
         // both blocks are empty, going further is useless
-        if self.interfaces.is_empty() && self.hosts.is_empty() {
+
+        // checks for iface blocks first
+        if self.group.is_empty() {
             return;
         };
+        let hosts = self.get_hosts();
 
         // check which tab the app is already pointing to and choose the opposite one
         if self.active_tab == Tab::Interface {
             // switch only if the other party is not empty
-            if !self.hosts.is_empty() {
+            if !hosts.is_empty() {
                 self.active_tab = Tab::Hosts;
             }
         } else {
             // same logic from above
-            if !self.interfaces.is_empty() {
+            if !self.group.is_empty() {
                 self.active_tab = Tab::Interface;
             }
         };
@@ -130,14 +153,16 @@ impl App {
 
     pub fn connect(&mut self, sx: &Sender<Command>, password: Option<String>) {
         if self.active_tab != Tab::Hosts {
-            self.notification = Some("No Host Selected.".to_string());
+            let _ = sx.send(Command::Notification(Some("No Host Selected.".to_string())));
             return;
         }
+        let hosts = self.get_hosts();
+        let interfaces = self.get_ifaces();
         if let Some(idx) = self.host_index.selected()
-            && let Some(target_host) = self.hosts.get(idx)
+            && let Some(target_host) = hosts.get(idx)
             && let Some(bssid) = target_host.bssid.clone()
             && let Some(iface_idx) = self.iface_index.selected()
-            && let Some(iface) = self.interfaces.get(iface_idx)
+            && let Some(iface) = interfaces.get(iface_idx)
         {
             {
                 let _ = sx.send(Command::Connect {
@@ -165,10 +190,34 @@ impl App {
     }
 
     pub fn set_interfaces(&mut self, ifaces: Vec<Interface>) {
-        self.interfaces = ifaces;
+        let mut result = vec![];
+        for iface in ifaces {
+            if self.get_ifaces().contains(&iface) {
+                let hosts = self
+                    .group
+                    .iter()
+                    .find(|i| i.iface.ifname == iface.ifname)
+                    .map(|i| i.hosts.clone())
+                    .unwrap_or(vec![]);
+                result.push(InterfaceList { iface, hosts });
+            } else {
+                result.push(InterfaceList {
+                    iface,
+                    hosts: vec![],
+                });
+            }
+        }
+        self.group = result;
     }
 
-    pub fn set_hosts(&mut self, hosts: Vec<Host>) {
-        self.hosts = hosts;
+    pub fn set_hosts(&mut self, hosts: Vec<Host>, ifname: &str) {
+        let _ = write(format!("hosts: {:#?}, ifname: {}", hosts, ifname));
+        if let Some(target) = self
+            .group
+            .iter_mut()
+            .find(|f| f.iface.ifname == Some(ifname.to_string()))
+        {
+            target.hosts = hosts;
+        };
     }
 }

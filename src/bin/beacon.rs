@@ -6,6 +6,7 @@ use beacon::{
         app::{App, Tab},
         ui::set_layouts,
     },
+    types::InterfaceType,
 };
 use ratatui::{
     Terminal,
@@ -35,24 +36,34 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut app = App::default();
+    let mut app = App::new();
     /*
      * commands are given to cmdsx, which are then processed and responses transfered to ressx
      * */
     let (ressx, resrx) = mpsc::channel::<Response>();
     let (cmdsx, cmdrx) = mpsc::channel::<Command>();
 
+    let cmdsx_clone = cmdsx.clone();
     tokio::spawn(async move {
         while let Ok(cmd) = cmdrx.recv() {
-            let response = match cmd {
-                Command::Notification(msg) => Response::Notification(msg),
-                _ => match execute(&cmd).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        println!("Error: {:?}", e.to_string());
-                        Response::Error(e.to_string())
-                    }
-                },
+            if let Command::Notification(msg) = cmd {
+                let cmdsx_clone = cmdsx_clone.clone();
+                if msg.is_some() {
+                    tokio::spawn(async move {
+                        let delay = 3;
+                        let duration = Duration::from_secs(delay);
+                        let _ = write("disable notifcation in 3 secs".to_string());
+                        tokio::time::sleep(duration).await;
+                        let _ = cmdsx_clone.send(Command::Notification(None));
+                    });
+                }
+                let response = Response::Notification(msg);
+                let _ = ressx.send(response);
+                return;
+            }
+            let response = match execute(&cmd).await {
+                Ok(r) => r,
+                Err(e) => Response::Error(e.to_string()),
             };
             let _ = ressx.send(response);
         }
@@ -73,8 +84,9 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
 
         if app.active_tab == Tab::Interface
             && let Some(idx) = app.iface_index.selected()
-            && let Some(active_iface) = app.interfaces.get(idx)
+            && let Some(active_iface) = app.get_ifaces().get(idx)
             && last_active_interface != active_iface.ifname
+            && active_iface.iftype == InterfaceType::Wireless
         {
             cmdsx.send(Command::ListActiveConnections(active_iface.clone()))?;
             last_active_interface = active_iface.ifname.clone();
@@ -83,12 +95,20 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         if let Ok(response) = resrx.try_recv() {
             match response {
                 Response::AllInterfaces(ifaces) => {
-                    app.interfaces = ifaces;
+                    app.set_interfaces(ifaces);
                 }
-                Response::ActiveHosts(hosts) => {
-                    app.hosts = hosts;
+                Response::ActiveHosts(ifname, hosts) => {
+                    app.set_hosts(hosts, &ifname);
                 }
-                Response::Notification(msg) => app.notification = Some(msg),
+                Response::Notification(msg) => {
+                    app.notification = msg;
+                }
+                Response::Error(err) => {
+                    let _ = cmdsx.send(Command::Notification(Some(err)));
+                }
+                Response::Connected => {
+                    let _ = cmdsx.send(Command::Notification(Some("Connected.".into())));
+                }
                 _ => {}
             }
         }
@@ -101,8 +121,8 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                         break;
                     }
                     KeyCode::Enter => {
-                        if let Some(_) = app.hosts.iter().find(|host| host.is_connected) {
-                            app.connect(&cmdsx, Some("kakakaka".into()));
+                        if let Some(_) = app.get_hosts().iter().find(|host| host.is_connected) {
+                            app.connect(&cmdsx, Some("kakakakaka".into()));
                         } else {
                             let _ = cmdsx.send(Command::Disconnect);
                         }

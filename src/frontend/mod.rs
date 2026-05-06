@@ -1,6 +1,5 @@
-use crate::{Command, Response, SOCKET_PATH};
+use crate::{Command, Response, SOCKET_PATH, debug::write};
 pub mod app;
-pub mod control;
 pub mod ui;
 use std::{
     error::Error,
@@ -11,7 +10,7 @@ use std::{
 pub fn command(cmd: Command) -> Result<Response, Box<dyn Error>> {
     let mut socket = UnixStream::connect(SOCKET_PATH)?;
 
-    println!("Command sent: {:?}", cmd);
+    write(format!("Command sent: {:?}", cmd));
     let serialized = bincode::serialize(&cmd)?;
     socket.write_all(&serialized)?;
 
@@ -19,7 +18,7 @@ pub fn command(cmd: Command) -> Result<Response, Box<dyn Error>> {
     let n = socket.read(&mut buf)?;
     let response: Response = bincode::deserialize(&buf[..n])?;
 
-    println!("Response: {:#?}", response);
+    write(format!("Response: {:#?}", response));
     Ok(response)
 }
 

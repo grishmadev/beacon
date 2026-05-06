@@ -1,8 +1,4 @@
-use beacon::{
-    Command, Response,
-    backend::{executer::execute, functions::list_active_signals},
-    wifi::helper::{get_family_info, get_interfaces},
-};
+use beacon::{Command, Response, backend::executer::execute, debug::write};
 use std::{
     error::Error,
     fs,
@@ -19,11 +15,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let listener = UnixListener::bind(SOCKET_PATH)?;
     println!("Daemon listening on {}", SOCKET_PATH);
-    // let family_info = get_family_info()?;
-    // let interfaces = get_interfaces()?;
-
-    // let response = list_active_signals(&family_info, &interfaces).expect("error in response..");
-    // println!("Response : {:?}", response);
     loop {
         let (mut socket, _) = listener.accept()?;
 
@@ -32,13 +23,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let n = socket.read(&mut buf).unwrap();
 
             let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-            println!("Command recieved: {:#?}", cmd);
+            write(format!("Command recieved: {:#?}", cmd));
 
             let response = match execute(&cmd).await {
                 Ok(s) => s,
                 Err(e) => Response::Error(e.to_string()),
             };
-            println!("Response: {:#?}", response);
+            write(format!("Response: {:#?}", response));
             let serialized = bincode::serialize(&response).unwrap();
             socket.write_all(&serialized).unwrap();
         });
