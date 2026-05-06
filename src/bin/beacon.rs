@@ -113,22 +113,29 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        if event::poll(Duration::from_millis(10))? {
-            if let Event::Key(key) = event::read()? {
-                app.handle_keys(key);
-                match key.code {
-                    KeyCode::Char('q') => {
-                        break;
-                    }
-                    KeyCode::Enter => {
-                        if let Some(_) = app.get_hosts().iter().find(|host| host.is_connected) {
-                            app.connect(&cmdsx, Some("kakakakaka".into()));
-                        } else {
-                            let _ = cmdsx.send(Command::Disconnect);
-                        }
-                    }
-                    _ => {}
+        if event::poll(Duration::from_millis(10))?
+            && let Event::Key(key) = event::read()?
+        {
+            app.handle_keys(key);
+            match key.code {
+                KeyCode::Char('q') => {
+                    break;
                 }
+                KeyCode::Enter => {
+                    if app
+                        .get_hosts()
+                        .iter()
+                        .find(|host| host.is_connected)
+                        .is_some()
+                    {
+                        // disconnect if connected
+                        let _ = cmdsx.send(Command::Disconnect);
+                    } else {
+                        // connect if disconnected
+                        app.connect(&cmdsx, Some("kakakakaka".into()));
+                    }
+                }
+                _ => {}
             }
         }
     }
