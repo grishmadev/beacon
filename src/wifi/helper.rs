@@ -1,5 +1,7 @@
 use crate::debug::write;
+use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
+use crate::wifi::wpa_supplicant::request_host_data;
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
@@ -415,6 +417,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     Nl80211Attr::AttrIfindex => {
                         if payload.len() >= 4 {
                             let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
+                            connection.ifindex = Some(ifindex);
                             let hosts = get_scan(family_id, ifindex)?;
                             match hosts.into_iter().find(|h| h.is_connected) {
                                 Some(host) => {
@@ -428,9 +431,23 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     }
 
                     _ => {
-                        write(format!("{:#?}", String::from_utf8_lossy(payload)));
+                        let _ = write(format!("{:#?}", String::from_utf8_lossy(payload)));
                     }
                 }
+            }
+            if let Some(mac) = connection.mac.clone()
+                && let Some(ifname) = connection.ifname.clone()
+                && let Some(ifindex) = connection.ifindex.clone()
+            {
+                let extra_data = request_host_data(&ifindex, &ifname, mac_to_bytes(&mac))?;
+                connection.ip_addr = extra_data.ip_addr;
+                connection.subnet_mask = extra_data.subnet_mask;
+                connection.gateway = extra_data.gateway;
+                connection.dns_servers = extra_data.dns_servers;
+                connection.server_id = extra_data.server_id;
+                connection.lease_duration = extra_data.lease_duration;
+                connection.renewal_time = extra_data.renewal_time;
+                connection.rebinding_time = extra_data.rebinding_time;
             }
             return Ok(Some(connection));
         }

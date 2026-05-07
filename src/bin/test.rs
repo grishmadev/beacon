@@ -1,6 +1,7 @@
 use beacon::{
     Command, Response,
-    backend::{executer::execute, functions::list_interfaces},
+    backend::functions::{disconnect_connection, list_interfaces},
+    executer::execute,
 };
 
 #[tokio::main]
@@ -32,4 +33,5 @@ async fn main() {
         //     Err(e) => println!("Error: {}", e),
         // };
     }
+    disconnect_connection("wlo1");
 }

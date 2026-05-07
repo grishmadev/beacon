@@ -1,7 +1,7 @@
 use beacon::{
     Command, Response,
-    backend::executer::execute,
     debug::write,
+    executer::response,
     frontend::{
         app::{App, Tab},
         ui::set_layouts,
@@ -46,33 +46,41 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
     let cmdsx_clone = cmdsx.clone();
     tokio::spawn(async move {
         while let Ok(cmd) = cmdrx.recv() {
-            if let Command::Notification(msg) = cmd {
-                let cmdsx_clone = cmdsx_clone.clone();
-                if msg.is_some() {
-                    tokio::spawn(async move {
-                        let delay = 3;
-                        let duration = Duration::from_secs(delay);
-                        let _ = write("disable notifcation in 3 secs".to_string());
-                        tokio::time::sleep(duration).await;
-                        let _ = cmdsx_clone.send(Command::Notification(None));
-                    });
+            match cmd {
+                Command::Notification(msg) => {
+                    let cmdsx_clone = cmdsx_clone.clone();
+                    if msg.is_some() {
+                        tokio::spawn(async move {
+                            let delay = 3;
+                            let duration = Duration::from_secs(delay);
+                            let _ = write("disable notifcation in 3 secs".to_string());
+                            tokio::time::sleep(duration).await;
+                            let _ = cmdsx_clone.send(Command::Notification(None));
+                        });
+                    }
+                    let response = Response::Notification(msg);
+                    let _ = ressx.send(response);
+                    return;
                 }
-                let response = Response::Notification(msg);
-                let _ = ressx.send(response);
-                return;
+                Command::Tick => {
+                    let _ = ressx.send(Response::Tick);
+                }
+                _ => {
+                    let response = match response(&cmd).await {
+                        Ok(r) => r,
+                        Err(e) => Response::Error(e.to_string()),
+                    };
+                    let _ = ressx.send(response);
+                }
             }
-            let response = match execute(&cmd).await {
-                Ok(r) => r,
-                Err(e) => Response::Error(e.to_string()),
-            };
-            let _ = ressx.send(response);
         }
     });
     let cmdsx_clone = cmdsx.clone();
     spawn(move || {
         loop {
-            let _ = cmdsx_clone.send(Command::ListInterfaces);
-            thread::sleep(Duration::from_secs(1));
+            // Scan for active Interfaces every second or so
+            let _ = cmdsx_clone.send(Command::Tick);
+            thread::sleep(Duration::from_millis(2000));
         }
     });
 
@@ -106,6 +114,17 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                 Response::Error(err) => {
                     let _ = cmdsx.send(Command::Notification(Some(err)));
                 }
+                Response::CurrentConnection(connection) => {
+                    app.current_connection = connection;
+                }
+                Response::Tick => {
+                    let active_iface = app.get_current_interface();
+                    let _ = cmdsx.send(Command::ListInterfaces);
+                    if let Some(iface) = active_iface.clone() {
+                        let _ = cmdsx.send(Command::ListActiveConnections(iface));
+                        let _ = cmdsx.send(Command::CurrentConnection);
+                    };
+                }
                 Response::Connected => {
                     let _ = cmdsx.send(Command::Notification(Some("Connected.".into())));
                 }
@@ -132,7 +151,7 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                         let _ = cmdsx.send(Command::Disconnect);
                     } else {
                         // connect if disconnected
-                        app.connect(&cmdsx, Some("kakakakaka".into()));
+                        app.connect(&cmdsx, Some("123456890".into()));
                     }
                 }
                 _ => {}

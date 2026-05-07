@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Connection, Host, Interface};
+use crate::types::{Connection, CurrentConnection, Host, Interface};
 pub mod backend;
 pub mod debug;
+pub mod executer;
 pub mod frontend;
 pub mod types;
 pub mod wifi;
@@ -30,8 +31,10 @@ pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
     Ping,
+    Tick,
     ListConnections,
     ListActiveConnections(Interface),
+    CurrentConnection,
     ListInterfaces,
     Connect {
         bssid: String,
@@ -47,6 +50,8 @@ pub enum Command {
 pub enum Response {
     Ok,
     Pong,
+    Tick,
+    CurrentConnection(Option<CurrentConnection>),
     ActiveHosts(String, Vec<Host>),
     SavedHosts(Vec<Connection>),
     AllInterfaces(Vec<Interface>),
@@ -54,26 +59,3 @@ pub enum Response {
     Connected,
     Error(String),
 }
-
-// pub mod debug {
-//     use std::error::Error;
-//     use std::io::Read;
-//     use std::os::unix::fs::FileExt;
-//     use std::{
-//         fs::{self, File},
-//         path::Path,
-//     };
-//
-//     pub fn write(str: &str) -> Result<(), Box<dyn Error>> {
-//         let path = "./debug.txt";
-//         if !Path::new(path).exists() {
-//             fs::File::create(path)?;
-//         }
-//         let mut file = File::open(path)?;
-//         let mut content: String = "".to_string();
-//         let endpos = content.len();
-//         file.read_to_string(&mut content)?;
-//         file.write_at(str.as_bytes(), endpos as u64)?;
-//         Ok(())
-//     }
-// }

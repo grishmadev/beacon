@@ -2,34 +2,36 @@ use std::sync::mpsc::Sender;
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
-    widgets::ListState,
+    widgets::{ListState, TableState},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Command,
     debug::write,
-    types::{Host, Interface},
+    types::{CurrentConnection, Host, Interface},
 };
 
-#[derive(Default, Debug, PartialEq, Clone)]
+#[derive(Default, Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Tab {
     #[default]
     Interface,
     Hosts,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceList {
     pub iface: Interface,
     pub hosts: Vec<Host>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct App {
     pub group: Vec<InterfaceList>,
     pub active_tab: Tab,
     pub iface_index: ListState, // starts from 0
-    pub host_index: ListState,
+    pub host_index: TableState,
     pub notification: Option<String>,
+    pub current_connection: Option<CurrentConnection>,
 }
 
 impl App {
@@ -38,8 +40,9 @@ impl App {
             group: vec![],
             active_tab: Tab::Interface,
             iface_index: ListState::default(),
-            host_index: ListState::default(),
+            host_index: TableState::default(),
             notification: None,
+            current_connection: None,
         }
     }
     pub fn get_ifaces(&mut self) -> Vec<Interface> {
@@ -47,6 +50,16 @@ impl App {
             .iter()
             .map(|i| i.iface.clone())
             .collect::<Vec<Interface>>()
+    }
+    pub fn get_current_interface(&mut self) -> Option<Interface> {
+        if let Some(idx) = self.iface_index.selected()
+            && let Some(ifl) = self.group.get(idx)
+        {
+            let iface = ifl.iface.clone();
+            Some(iface)
+        } else {
+            None
+        }
     }
     pub fn get_hosts(&mut self) -> Vec<Host> {
         if let Some(idx) = self.iface_index.selected()

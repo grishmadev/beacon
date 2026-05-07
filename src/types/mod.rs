@@ -3,6 +3,8 @@ use std::net::Ipv4Addr;
 use dhcp4r::packet::Packet;
 use serde::{Deserialize, Serialize};
 
+use crate::{Command, frontend::app::App};
+
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Host {
     pub bssid: Option<String>,
@@ -93,13 +95,22 @@ impl Interface {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CurrentConnection {
     pub ifname: Option<String>,
+    pub ifindex: Option<u32>,
     pub ssid: Option<String>,
     pub mac: Option<String>,
     pub bssid: Option<String>,
     pub frequency: Option<u32>,
+    pub ip_addr: Option<Ipv4Addr>,
+    pub subnet_mask: Option<Ipv4Addr>,
+    pub gateway: Option<Ipv4Addr>,
+    pub dns_servers: Vec<Ipv4Addr>,
+    pub server_id: Option<Ipv4Addr>,
+    pub lease_duration: u32,
+    pub renewal_time: u32,
+    pub rebinding_time: u32,
 }
 
 impl CurrentConnection {

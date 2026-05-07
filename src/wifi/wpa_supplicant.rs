@@ -414,7 +414,7 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
-fn request_host_data(
+pub fn request_host_data(
     ifindex: &u32,
     ifname: &str,
     mac_address: [u8; 6],
@@ -576,10 +576,6 @@ fn request_host_data(
             };
             return Ok(result);
         }
-        cwrite(format!(
-            "No reply, Retrying... Attempts left {}",
-            total_retries - attempt,
-        ));
     }
     Err("Failed after retry.".into())
 }
