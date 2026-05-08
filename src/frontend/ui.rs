@@ -31,7 +31,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
 
     let left_inner_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(10)])
+        .constraints([Constraint::Min(0), Constraint::Length(15)])
         .split(left_inner);
 
     let iface_vec = app
@@ -56,10 +56,31 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .highlight_symbol(">> ");
 
     if let Some(curcon) = app.current_connection.clone() {
-        let mut current_connection_list = vec![format!(
-            "{:<15}",
-            curcon.ip_addr.as_ref().unwrap().to_string()
-        )];
+        let mut current_connection_list = vec![];
+        let mut add_attr = |l: &str, r: &str| {
+            current_connection_list.push(format!("{:<20}: {:>15}", l, r));
+        };
+        if let Some(ip) = curcon.ip_addr {
+            add_attr("IP", &ip.to_string());
+        }
+        if let Some(dns) = curcon.dns_servers.first() {
+            add_attr("DNS", &dns.to_string());
+        }
+        if let Some(server_id) = curcon.server_id {
+            add_attr("Server ID", &server_id.to_string());
+        }
+        if let Some(subnet) = curcon.subnet_mask {
+            add_attr("Subnet", &subnet.to_string());
+        }
+        if let Some(gateway) = curcon.gateway {
+            add_attr("Gateway", &gateway.to_string());
+        }
+        if let Some(freq) = curcon.frequency {
+            add_attr("Frequency", &freq.to_string());
+        }
+        add_attr("Lease Duration", &curcon.lease_duration.to_string());
+        add_attr("Renewal Time", &curcon.renewal_time.to_string());
+        add_attr("Rebinding Time", &curcon.rebinding_time.to_string());
 
         let current_connection = List::new(current_connection_list).block(
             Block::default()

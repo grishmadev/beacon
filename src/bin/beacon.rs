@@ -151,7 +151,7 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                         let _ = cmdsx.send(Command::Disconnect);
                     } else {
                         // connect if disconnected
-                        app.connect(&cmdsx, Some("123456890".into()));
+                        app.connect(&cmdsx, Some("kakakakaka".into()));
                     }
                 }
                 _ => {}
