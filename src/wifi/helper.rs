@@ -2,6 +2,9 @@ use crate::debug::write;
 use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
 use crate::wifi::wpa_supplicant::request_host_data;
+use dhcp4r::options::DhcpOption;
+use dhcp4r::packet::Packet;
+use dhcp4r::server;
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
@@ -18,6 +21,7 @@ use neli::{
     types::{Buffer, GenlBuffer, RtBuffer},
     utils::Groups,
 };
+use std::net::{Ipv4Addr, UdpSocket};
 use std::{
     error::Error,
     io::Cursor,
@@ -521,4 +525,37 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
     Ok(())
 }
 
-// pub fn save_connection() -> Resul
+pub fn renew_connection(broadcast: bool) -> Result<(), Box<dyn Error>> {
+    let family_info = get_family_info()?;
+    let family_id = family_info.id;
+    let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
+    let host_ip = current.ip_addr.expect("No IP Address found.");
+    let mac = current.mac.expect("No MAC Address found.");
+    let server_id = current.server_id.expect("NO Server ID found.");
+    let renewal_packet = Packet {
+        reply: false,
+        hops: 0,
+        xid: rand::random(),
+        secs: 0,
+        broadcast: false,
+        ciaddr: host_ip,
+        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+        giaddr: Ipv4Addr::new(0, 0, 0, 0),
+        siaddr: Ipv4Addr::new(0, 0, 0, 0),
+        chaddr: mac_to_bytes(&mac),
+        options: vec![
+            DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Request),
+            DhcpOption::ServerIdentifier(host_ip),
+        ],
+    };
+    let socket = UdpSocket::bind("0.0.0.0:68")?;
+    let mut bytes = Vec::<u8>::new();
+    renewal_packet.encode(&mut bytes);
+    let dest = if broadcast {
+        Ipv4Addr::new(255, 255, 255, 255)
+    } else {
+        server_id
+    };
+    socket.send_to(&bytes, (dest, 67))?;
+    Ok(())
+}

@@ -454,7 +454,7 @@ pub fn request_host_data(
     };
     socket.bind(&sockaddr)?;
 
-    for attempt in 0..total_retries {
+    for _ in 0..total_retries {
         let msg = Packet {
             reply: false,
             hops: 0,

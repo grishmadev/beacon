@@ -1,7 +1,14 @@
 use std::{
+    collections::HashMap,
     error::Error,
     io::{Read, Write},
     os::unix::net::UnixStream,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -10,11 +17,28 @@ use crate::{
         connect_to, current_connection, disconnect_connection, list_active_signals,
         list_all_signals,
     },
+    debug::write,
     wifi::{
-        helper::{get_current, get_family_info, get_interfaces},
+        helper::{get_family_info, get_interfaces, renew_connection},
         wpa_supplicant::{find_active_interface, request_host_data},
     },
 };
+
+const RETRIES: u32 = 5;
+
+struct TimeTracker {
+    stop_signal: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+impl TimeTracker {
+    fn stop(&mut self) {
+        self.stop_signal.store(false, Ordering::Relaxed);
+
+        if let Some(h) = self.thread.take() {
+            h.join().expect("Thread Panicked.");
+        }
+    }
+}
 
 pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let family_info = get_family_info()?;
@@ -22,49 +46,109 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let interfaces = get_interfaces()?;
     let active_interface = find_active_interface(&interfaces);
     let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
-    let response: Response = match cmd {
-        Command::Ping => Response::Pong,
+    let mut response = Response::Error("Uninitialized Response".into());
+    for _ in 0..RETRIES {
+        response = match cmd {
+            Command::Ping => Response::Pong,
 
-        Command::ListConnections => {
-            let hosts = list_all_signals()?;
-            Response::SavedHosts(hosts)
-        }
-
-        Command::ListActiveConnections(iface) => {
-            let connections = list_active_signals(&family_info, iface.clone())?;
-            if let Some(ifname) = iface.ifname.clone() {
-                Response::ActiveHosts(ifname, connections)
-            } else {
-                Response::Error("Unknown Interface.".into())
+            Command::ListConnections => {
+                let hosts = list_all_signals()?;
+                Response::SavedHosts(hosts)
             }
+
+            Command::ListActiveConnections(iface) => {
+                let connections = list_active_signals(&family_info, iface.clone())?;
+                if let Some(ifname) = iface.ifname.clone() {
+                    Response::ActiveHosts(ifname, connections)
+                } else {
+                    Response::Error("Unknown Interface.".into())
+                }
+            }
+
+            Command::ListInterfaces => Response::AllInterfaces(interfaces.clone()),
+
+            Command::Notification(msg) => Response::Notification(msg.clone()),
+
+            Command::Connect {
+                bssid,
+                iface,
+                password,
+            } => match connect_to(&family_info, &interfaces, iface, bssid, password).await {
+                Ok(_) => {
+                    let stop_signal = Arc::new(AtomicBool::new(true));
+                    let signal_for_thread = Arc::clone(&stop_signal);
+                    let ifname = iface.ifname.clone().unwrap();
+                    let id =
+                        spawn_lease_manager(ifname, Duration::from_secs(3600), signal_for_thread)?;
+                    let thread_handle = TimeTracker {
+                        thread: Some(id),
+                        stop_signal,
+                    };
+
+                    Response::Connected
+                }
+                Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
+            },
+            Command::CurrentConnection => {
+                let mut response: Response = Response::Error("Uninitialized Responpse".into());
+                for _ in 0..5 {
+                    response = match current_connection() {
+                        Ok(curcon) => Response::CurrentConnection(curcon),
+                        Err(err) => {
+                            response = Response::Error(err.to_string());
+                            continue;
+                        }
+                    };
+                }
+                response
+            }
+
+            Command::Disconnect => match disconnect_connection(&active_ifname) {
+                Ok(_) => Response::Ok,
+                Err(e) => Response::Error("Couldn't Disconnect.".into()),
+            },
+
+            Command::Tick => Response::Tick,
+            _ => Response::Error("Unknown Command.".into()),
+        };
+        if let Response::Error(_) = response {
+            continue;
+        } else {
+            break;
         }
-
-        Command::ListInterfaces => Response::AllInterfaces(interfaces),
-
-        Command::Notification(msg) => Response::Notification(msg.clone()),
-
-        Command::Connect {
-            bssid,
-            iface,
-            password,
-        } => {
-            connect_to(&family_info, &interfaces, iface, bssid, password).await?;
-            Response::Connected
-        }
-        Command::CurrentConnection => match current_connection() {
-            Ok(curcon) => Response::CurrentConnection(curcon),
-            Err(err) => Response::Error(err.to_string()),
-        },
-
-        Command::Disconnect => {
-            disconnect_connection(&active_ifname)?;
-            Response::Ok
-        }
-
-        Command::Tick => Response::Tick,
-        _ => Response::Error("Unknown Command.".into()),
-    };
+    }
     Ok(response)
+}
+
+pub fn spawn_lease_manager(
+    ifname: String,
+    lease_duration: Duration,
+    stop_signal: Arc<AtomicBool>,
+) -> Result<JoinHandle<()>, Box<dyn Error>> {
+    let handle = std::thread::spawn(move || {
+        let start = Instant::now();
+        let t1 = lease_duration.div_f32(2.0);
+        let t2 = lease_duration.mul_f32(0.875);
+
+        let mut renewed = false;
+        while stop_signal.load(std::sync::atomic::Ordering::Relaxed) {
+            let elapsed = start.elapsed();
+
+            if elapsed >= lease_duration {
+                let _ = write(format!("[{}] Lease Expired. Dropping IP.", ifname));
+                break;
+            }
+            if elapsed >= t2 {
+                renew_connection(true);
+            } else if elapsed >= t1 && !renewed {
+                if renew_connection(false).is_ok() {
+                    renewed = true;
+                };
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    });
+    Ok(handle)
 }
 
 pub async fn response(cmd: &Command) -> Result<Response, Box<dyn Error>> {

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},

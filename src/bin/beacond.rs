@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let listener = UnixListener::bind(SOCKET_PATH)?;
     println!("Daemon listening on {}", SOCKET_PATH);
+
     loop {
         let (mut socket, _) = listener.accept()?;
 

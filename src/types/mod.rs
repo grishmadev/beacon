@@ -3,8 +3,6 @@ use std::net::Ipv4Addr;
 use dhcp4r::packet::Packet;
 use serde::{Deserialize, Serialize};
 
-use crate::{Command, frontend::app::App};
-
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Host {
     pub bssid: Option<String>,
