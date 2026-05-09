@@ -41,7 +41,8 @@ pub enum Command {
         password: Option<String>,
         iface: Interface,
     },
-    Notification(Option<String>),
+    Notification(String),
+    ClearNotification,
     Disconnect,
     Info(String), // bssid,
 }
@@ -55,7 +56,8 @@ pub enum Response {
     ActiveHosts(String, Vec<Host>),
     SavedHosts(Vec<Connection>),
     AllInterfaces(Vec<Interface>),
-    Notification(Option<String>),
+    Notification(String),
     Connected,
+    ClearNotification,
     Error(String),
 }

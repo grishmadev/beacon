@@ -559,3 +559,25 @@ pub fn renew_connection(broadcast: bool) -> Result<(), Box<dyn Error>> {
     socket.send_to(&bytes, (dest, 67))?;
     Ok(())
 }
+
+pub fn validate_packet(
+    initialized_data: &[u8],
+    size: usize,
+) -> Result<Option<Packet>, Box<dyn Error>> {
+    if size < 42 {
+        return Ok(None);
+    }
+    if initialized_data[23] != 17 {
+        return Ok(None);
+    }
+    let dest_port = u16::from_be_bytes([initialized_data[36], initialized_data[37]]);
+    if dest_port != 68 {
+        return Ok(None);
+    }
+    if initialized_data[42] != 2 {
+        return Ok(None);
+    };
+    let dhcp_data = &initialized_data[42..];
+    let packet = Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
+    Ok(Some(packet))
+}

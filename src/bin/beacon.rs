@@ -49,18 +49,17 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
             match cmd {
                 Command::Notification(msg) => {
                     let cmdsx_clone = cmdsx_clone.clone();
-                    if msg.is_some() {
-                        tokio::spawn(async move {
-                            let delay = 3;
-                            let duration = Duration::from_secs(delay);
-                            let _ = write("disable notifcation in 3 secs".to_string());
-                            tokio::time::sleep(duration).await;
-                            let _ = cmdsx_clone.send(Command::Notification(None));
-                        });
-                    }
-                    let response = Response::Notification(msg);
-                    let _ = ressx.send(response);
-                    return;
+                    thread::spawn(move || {
+                        let delay = 3;
+                        let duration = Duration::from_secs(delay);
+                        let _ = write("disable notifcation in 3 secs".to_string());
+                        thread::sleep(duration);
+                        let _ = cmdsx_clone.send(Command::ClearNotification);
+                    });
+                    let _ = ressx.send(Response::Notification(msg));
+                }
+                Command::ClearNotification => {
+                    let _ = ressx.send(Response::ClearNotification);
                 }
                 Command::Tick => {
                     let _ = ressx.send(Response::Tick);
@@ -109,10 +108,13 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                     app.set_hosts(hosts, &ifname);
                 }
                 Response::Notification(msg) => {
-                    app.notification = msg;
+                    app.notification = Some(msg);
+                }
+                Response::ClearNotification => {
+                    app.notification = None;
                 }
                 Response::Error(err) => {
-                    let _ = cmdsx.send(Command::Notification(Some(err)));
+                    let _ = cmdsx.send(Command::Notification(err));
                 }
                 Response::CurrentConnection(connection) => {
                     app.current_connection = connection;
@@ -126,7 +128,7 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                     };
                 }
                 Response::Connected => {
-                    let _ = cmdsx.send(Command::Notification(Some("Connected.".into())));
+                    let _ = cmdsx.send(Command::Notification("Connected.".into()));
                 }
                 _ => {}
             }

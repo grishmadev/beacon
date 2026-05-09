@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::fs::{self, write};
 use std::io::{self, Cursor};
 use std::mem::MaybeUninit;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
@@ -21,10 +21,11 @@ use neli::types::RtBuffer;
 use neli::utils::Groups;
 use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
-use socket2::{Domain, Protocol, SockAddr, Type};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
+use crate::wifi::helper::validate_packet;
 
 pub async fn connect(
     mac_address: [u8; 6],
@@ -498,28 +499,10 @@ pub fn request_host_data(
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
-                    if size < 42 {
-                        continue;
-                    }
-                    if initialized_data[23] != 17 {
-                        continue;
-                    }
-                    let dest_port =
-                        u16::from_be_bytes([initialized_data[36], initialized_data[37]]);
-                    if dest_port != 68 {
-                        continue;
-                    }
-                    if initialized_data[42] != 2 {
-                        continue;
-                    }
-                    cwrite("found right packet".to_string());
-
-                    // skipping ethernet, ip, udp headers
-                    let dhcp_data = &initialized_data[42..];
                     let packet =
-                        Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
+                        validate_packet(initialized_data, size)?.expect("No Packet Found.");
 
-                    cwrite(format!(
+                    let _ = cwrite(format!(
                         "packet xid: {:?}, msg xid: {:?}",
                         packet.xid, msg.xid
                     ));
@@ -533,11 +516,11 @@ pub fn request_host_data(
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
-                                    cwrite(format!("Offered IP: {:?}", packet.yiaddr));
+                                    let _ = cwrite(format!("Offered IP: {:?}", packet.yiaddr));
                                     ip_addr = Some(packet.yiaddr);
                                 }
                                 _ => {
-                                    cwrite("Didnt find desired message.".into());
+                                    let _ = cwrite("Didnt find desired message.".into());
                                 }
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
@@ -578,4 +561,57 @@ pub fn request_host_data(
         }
     }
     Err("Failed after retry.".into())
+}
+
+pub fn get_current_host_data(
+    ifname: &str,
+    ifindex: &u32,
+    mac_address: [u8; 6],
+    current_ip: Ipv4Addr,
+) -> Result<(), Box<dyn Error>> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 1)), 68);
+    let dest = Ipv4Addr::new(255, 255, 255, 255);
+    socket.set_reuse_address(true)?;
+    #[cfg(all(unix, not(target_os = "solaris")))]
+    socket.set_reuse_port(true)?;
+    socket.bind(&addr.into())?;
+    let udp_socket: UdpSocket = socket.into();
+
+    bind_socket_to_device(&udp_socket, ifname)?;
+
+    let msg = Packet {
+        reply: false,
+        xid: rand::random(),
+        ciaddr: current_ip,
+        chaddr: mac_address,
+        hops: 0,
+        secs: 0,
+        broadcast: false,
+        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+        siaddr: Ipv4Addr::new(0, 0, 0, 0),
+        giaddr: Ipv4Addr::new(0, 0, 0, 0),
+        options: vec![
+            DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Inform),
+            DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
+        ],
+    };
+
+    let mut buf = [0u8; 1500];
+    let encoded = msg.encode(&mut buf);
+
+    udp_socket.set_broadcast(true)?;
+    udp_socket.send_to(encoded, "255.255.255.255:67")?;
+
+    udp_socket.set_read_timeout(Some(Duration::from_secs(3)));
+
+    let mut res_buf = [0u8; 1500];
+    while let (size, _) = udp_socket.recv_from(&mut res_buf)? {
+        let raw_data = unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
+        let packet = validate_packet(raw_data, size)?.expect("No Packet Found.");
+
+        for option in packet.options {}
+    }
+
+    Ok(())
 }

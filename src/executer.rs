@@ -67,8 +67,8 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
 
             Command::ListInterfaces => Response::AllInterfaces(interfaces.clone()),
 
-            Command::Notification(msg) => Response::Notification(msg.clone()),
-
+            Command::Notification(msg) => Response::Notification(msg.to_owned()),
+            Command::ClearNotification => Response::ClearNotification,
             Command::Connect {
                 bssid,
                 iface,

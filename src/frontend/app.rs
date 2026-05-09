@@ -166,7 +166,7 @@ impl App {
 
     pub fn connect(&mut self, sx: &Sender<Command>, password: Option<String>) {
         if self.active_tab != Tab::Hosts {
-            let _ = sx.send(Command::Notification(Some("No Host Selected.".to_string())));
+            let _ = sx.send(Command::Notification("No Host Selected.".to_string()));
             return;
         }
         let hosts = self.get_hosts();

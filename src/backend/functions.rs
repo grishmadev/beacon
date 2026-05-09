@@ -32,20 +32,20 @@ pub fn list_active_signals(
     Ok(result)
 }
 
-pub fn list_and_connect() -> Result<(), ()> {
-    let hosts = list_active_signals(family_info, interface)?;
-    let saved_hosts = list_saved_networks()?;
-    for host in hosts {
-        match saved_hosts
-            .iter()
-            .find(|h| h.bssid == host.bssid.as_ref().unwrap().to_string())
-        {
-            Some(connection) => {}
-            None => {}
-        };
-    }
-    Ok(())
-}
+// pub fn list_and_connect() -> Result<(), ()> {
+//     let hosts = list_active_signals(family_info, interface)?;
+//     let saved_hosts = list_saved_networks()?;
+//     for host in hosts {
+//         match saved_hosts
+//             .iter()
+//             .find(|h| h.bssid == host.bssid.as_ref().unwrap().to_string())
+//         {
+//             Some(connection) => {}
+//             None => {}
+//         };
+//     }
+//     Ok(())
+// }
 
 pub fn list_all_signals() -> Result<Vec<Connection>, Box<dyn Error>> {
     let networks = list_saved_networks()?;
