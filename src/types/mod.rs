@@ -107,8 +107,6 @@ pub struct CurrentConnection {
     pub dns_servers: Vec<Ipv4Addr>,
     pub server_id: Option<Ipv4Addr>,
     pub lease_duration: u32,
-    pub renewal_time: u32,
-    pub rebinding_time: u32,
 }
 
 impl CurrentConnection {
@@ -117,7 +115,7 @@ impl CurrentConnection {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DhcpLease {
     pub ip_addr: Option<Ipv4Addr>,
     pub subnet_mask: Option<Ipv4Addr>,
@@ -125,7 +123,5 @@ pub struct DhcpLease {
     pub dns_servers: Vec<Ipv4Addr>,
     pub server_id: Option<Ipv4Addr>,
     pub lease_duration: u32,
-    pub renewal_time: u32,
-    pub rebinding_time: u32,
-    pub offer: Packet,
+    pub offer: Option<Packet>,
 }

@@ -44,7 +44,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let family_info = get_family_info()?;
     // let family_id = family_info.id;
     let interfaces = get_interfaces()?;
-    let active_interface = find_active_interface(&interfaces);
+    let active_interface = find_active_interface();
     let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
     let mut response = Response::Error("Uninitialized Response".into());
     for _ in 0..RETRIES {

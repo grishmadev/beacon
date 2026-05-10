@@ -49,12 +49,13 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
             match cmd {
                 Command::Notification(msg) => {
                     let cmdsx_clone = cmdsx_clone.clone();
+                    let ressx_clone = ressx.clone();
                     thread::spawn(move || {
                         let delay = 3;
                         let duration = Duration::from_secs(delay);
                         let _ = write("disable notifcation in 3 secs".to_string());
                         thread::sleep(duration);
-                        let _ = cmdsx_clone.send(Command::ClearNotification);
+                        let _ = ressx_clone.send(Response::ClearNotification);
                     });
                     let _ = ressx.send(Response::Notification(msg));
                 }

@@ -19,13 +19,14 @@ use neli::rtnl::{Rtmsg, RtmsgBuilder};
 use neli::socket::NlSocket;
 use neli::types::RtBuffer;
 use neli::utils::Groups;
-use neli::{FromBytes, ToBytes};
+use neli::{FromBytes, ToBytes, router};
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+use crate::backend::functions::list_interfaces;
 use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
-use crate::wifi::helper::validate_packet;
+use crate::wifi::helper::{get_interfaces, validate_packet};
 
 pub async fn connect(
     mac_address: [u8; 6],
@@ -151,7 +152,9 @@ pub async fn connect(
     let host_data = request_host_data(ifindex, ifname, mac_address)?;
     cwrite(format!("host data: {:#?}", host_data));
 
-    send_dhcp_request(&host_data.offer, host_data.ip_addr.unwrap(), ifname)?;
+    if let Some(offer) = &host_data.offer {
+        send_dhcp_request(offer, host_data.ip_addr.unwrap(), ifname)?;
+    }
 
     let (connection, handle, _) = new_connection()?;
 
@@ -192,9 +195,8 @@ pub fn disconnect(ifname: &str) -> Result<(), Box<dyn Error>> {
     }
 }
 
-pub fn find_active_interface(
-    interfaces: &[Interface],
-) -> Result<Option<&Interface>, Box<dyn Error>> {
+pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
+    let ifaces = get_interfaces()?;
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
 
     let rtmsg = RtmsgBuilder::default()
@@ -261,7 +263,10 @@ pub fn find_active_interface(
             }
         }
     }
-    let result = interfaces.iter().find(|iface| iface.ifindex == ifindex);
+    let result = ifaces
+        .iter()
+        .find(|iface| iface.ifindex == ifindex)
+        .cloned();
     Ok(result)
 }
 
@@ -502,11 +507,6 @@ pub fn request_host_data(
                     let packet =
                         validate_packet(initialized_data, size)?.expect("No Packet Found.");
 
-                    let _ = cwrite(format!(
-                        "packet xid: {:?}, msg xid: {:?}",
-                        packet.xid, msg.xid
-                    ));
-
                     if packet.xid != msg.xid {
                         continue;
                     }
@@ -552,10 +552,8 @@ pub fn request_host_data(
                 dns_servers: dns_servers.unwrap_or(vec![]),
                 server_id,
                 lease_duration,
-                renewal_time: lease_duration / 2,
-                rebinding_time: (lease_duration as f64 * 0.875) as u32,
                 gateway,
-                offer: msg,
+                offer: Some(msg),
             };
             return Ok(result);
         }
@@ -564,54 +562,101 @@ pub fn request_host_data(
 }
 
 pub fn get_current_host_data(
-    ifname: &str,
-    ifindex: &u32,
     mac_address: [u8; 6],
     current_ip: Ipv4Addr,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<DhcpLease, Box<dyn Error>> {
+    let current_iface = find_active_interface()?.expect("No Active Interface Found.");
+    let ifname = current_iface.ifname.expect("No Ifname found.");
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 1)), 68);
-    let dest = Ipv4Addr::new(255, 255, 255, 255);
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 68);
+    let dest = "255.255.255.255:67";
     socket.set_reuse_address(true)?;
     #[cfg(all(unix, not(target_os = "solaris")))]
     socket.set_reuse_port(true)?;
     socket.bind(&addr.into())?;
     let udp_socket: UdpSocket = socket.into();
 
-    bind_socket_to_device(&udp_socket, ifname)?;
-
-    let msg = Packet {
-        reply: false,
-        xid: rand::random(),
-        ciaddr: current_ip,
-        chaddr: mac_address,
-        hops: 0,
-        secs: 0,
-        broadcast: false,
-        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
-        siaddr: Ipv4Addr::new(0, 0, 0, 0),
-        giaddr: Ipv4Addr::new(0, 0, 0, 0),
-        options: vec![
-            DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Inform),
-            DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
-        ],
-    };
-
-    let mut buf = [0u8; 1500];
-    let encoded = msg.encode(&mut buf);
+    bind_socket_to_device(&udp_socket, &ifname)?;
 
     udp_socket.set_broadcast(true)?;
-    udp_socket.send_to(encoded, "255.255.255.255:67")?;
+    udp_socket.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-    udp_socket.set_read_timeout(Some(Duration::from_secs(3)));
+    for _ in 0..5 {
+        let msg = Packet {
+            reply: false,
+            xid: rand::random(),
+            ciaddr: current_ip,
+            chaddr: mac_address,
+            hops: 0,
+            secs: 0,
+            broadcast: false,
+            yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+            siaddr: Ipv4Addr::new(0, 0, 0, 0),
+            giaddr: Ipv4Addr::new(0, 0, 0, 0),
+            options: vec![
+                DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Inform),
+                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
+            ],
+        };
 
-    let mut res_buf = [0u8; 1500];
-    while let (size, _) = udp_socket.recv_from(&mut res_buf)? {
-        let raw_data = unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
-        let packet = validate_packet(raw_data, size)?.expect("No Packet Found.");
+        let timeout = Instant::now() + Duration::from_secs(3);
+        let mut buf = [0u8; 1500];
+        let encoded = msg.encode(&mut buf);
+        udp_socket.send_to(encoded, dest)?;
+        let mut lease = DhcpLease::default();
+        let mut res_buf = [0u8; 1500];
+        loop {
+            let now = Instant::now();
+            if now >= timeout {
+                break;
+            }
+            match udp_socket.recv_from(&mut res_buf) {
+                Ok((size, _)) => {
+                    let raw_data = &res_buf[..size];
+                    let packet = match validate_packet(raw_data, size)? {
+                        Some(p) => p,
+                        _ => continue,
+                    };
 
-        for option in packet.options {}
+                    if packet.xid != msg.xid {
+                        continue;
+                    }
+                    for option in packet.options {
+                        match option {
+                            DhcpOption::DhcpMessageType(val) => match val {
+                                MessageType::Ack => {
+                                    lease.ip_addr = if packet.yiaddr.is_unspecified() {
+                                        Some(current_ip)
+                                    } else {
+                                        Some(packet.yiaddr)
+                                    };
+                                }
+                                MessageType::Nak => {
+                                    let _ = cwrite("Server Refused to acknwoledge.".to_string());
+                                }
+                                _ => {}
+                            },
+                            DhcpOption::DomainNameServer(ips) => lease.dns_servers = ips,
+                            DhcpOption::Router(routers) if !routers.is_empty() => {
+                                lease.gateway = Some(routers[0]);
+                            }
+                            DhcpOption::SubnetMask(subnet) => lease.subnet_mask = Some(subnet),
+                            DhcpOption::ServerIdentifier(id) => lease.server_id = Some(id),
+                            DhcpOption::IpAddressLeaseTime(secs) => lease.lease_duration = secs,
+                            _ => {}
+                        }
+                    }
+                    lease.offer = Some(msg);
+                    return Ok(lease);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
+        }
     }
-
-    Ok(())
+    Err("Failed after retry.".into())
 }

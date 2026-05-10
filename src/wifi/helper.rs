@@ -1,10 +1,16 @@
 use crate::debug::write;
 use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
-use crate::wifi::wpa_supplicant::request_host_data;
+use crate::wifi::wpa_supplicant::{
+    find_active_interface, get_current_host_data, request_host_data,
+};
 use dhcp4r::options::DhcpOption;
 use dhcp4r::packet::Packet;
 use dhcp4r::server;
+use neli::consts::rtnl::Ifa;
+use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder};
+use neli::socket::synchronous::NlSocketHandle;
+use neli::types::NlBuffer;
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
@@ -440,20 +446,63 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 }
             }
             if let Some(mac) = connection.mac.clone()
-                && let Some(ifname) = connection.ifname.clone()
-                && let Some(ifindex) = connection.ifindex.clone()
+                && let Ok(Some(ip)) = get_current_ip()
             {
-                let extra_data = request_host_data(&ifindex, &ifname, mac_to_bytes(&mac))?;
+                let extra_data = get_current_host_data(mac_to_bytes(&mac), ip)?;
                 connection.ip_addr = extra_data.ip_addr;
                 connection.subnet_mask = extra_data.subnet_mask;
                 connection.gateway = extra_data.gateway;
                 connection.dns_servers = extra_data.dns_servers;
                 connection.server_id = extra_data.server_id;
                 connection.lease_duration = extra_data.lease_duration;
-                connection.renewal_time = extra_data.renewal_time;
-                connection.rebinding_time = extra_data.rebinding_time;
             }
             return Ok(Some(connection));
+        }
+    }
+    Ok(None)
+}
+
+pub fn get_current_ip() -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
+    let active_iface = find_active_interface()?.expect("Cannot find Active INterface");
+    let ifindex = active_iface.ifindex.expect("No Index found.");
+    let socket = NlSocketHandle::connect(NlFamily::Route, None, Groups::empty())?;
+    let ifaddrmsg = IfaddrmsgBuilder::default()
+        .ifa_family(RtAddrFamily::Inet)
+        .ifa_prefixlen(0)
+        .ifa_scope(RtScope::Universe)
+        .ifa_index(ifindex)
+        .build()?;
+
+    let nlhdr: Nlmsghdr<Rtm, Ifaddrmsg> = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_type(Rtm::Getaddr)
+        .nl_payload(NlPayload::Payload(ifaddrmsg))
+        .build()?;
+
+    socket.send(&nlhdr)?;
+
+    let mut iter = socket.recv::<Rtm, Ifaddrmsg>()?;
+    while let Some(Ok(res)) = iter.0.next() {
+        match res.nl_payload() {
+            NlPayload::Err(e) => return Err(format!("Kernel Error: {}", e).into()),
+            NlPayload::Payload(payload) => {
+                if payload.ifa_index() == &(ifindex as u32) {
+                    for rta in payload.rtattrs().iter() {
+                        match rta.rta_type() {
+                            Ifa::Local | Ifa::Address => {
+                                let bytes = rta.rta_payload().as_ref();
+
+                                if bytes.len() == 4 {
+                                    let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+                                    return Ok(Some(ip));
+                                }
+                            }
+                            _ => continue,
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     Ok(None)
