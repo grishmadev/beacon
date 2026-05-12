@@ -1,9 +1,8 @@
 use beacon::{Command, Response, executer::execute};
-use std::{
-    error::Error,
-    fs,
-    io::{Read, Write},
-    os::unix::net::UnixListener,
+use std::{error::Error, fs};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixListener,
 };
 
 use beacon::SOCKET_PATH;
@@ -17,11 +16,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Daemon listening on {}", SOCKET_PATH);
 
     loop {
-        let (mut socket, _) = listener.accept()?;
+        let (mut socket, _) = listener.accept().await?;
 
         tokio::spawn(async move {
-            let mut buf = [0; 1024];
-            let n = socket.read(&mut buf).unwrap();
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await.unwrap();
 
             let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
             // dwrite(format!("Command recieved: {:#?}", cmd));
@@ -33,7 +32,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // dwrite(format!("Response: {:#?}", response));
             println!("Response: {:#?}", response);
             let serialized = bincode::serialize(&response).unwrap();
-            socket.write_all(&serialized).unwrap();
+            socket
+                .write_all(&serialized)
+                .await
+                .expect("Couldn't Write to File");
         });
     }
 }

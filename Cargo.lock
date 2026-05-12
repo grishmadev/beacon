@@ -50,6 +50,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "dhcp4r",
+ "futures",
  "libc",
  "neli 0.7.4",
  "nl80211",

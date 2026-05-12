@@ -1,15 +1,19 @@
+use std::any::Any;
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::{self, write};
 use std::io::{self, Cursor};
 use std::mem::MaybeUninit;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
+use std::os::raw;
 use std::os::unix::net::UnixDatagram;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use dhcp4r::options::{DhcpOption, MessageType};
+use dhcp4r::options::{DhcpOption, MessageType, RawDhcpOption};
 use dhcp4r::packet::Packet;
+use libc::sleep;
 use neli::attr::Attribute;
 use neli::consts::nl::NlmF;
 use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
@@ -21,12 +25,14 @@ use neli::types::RtBuffer;
 use neli::utils::Groups;
 use neli::{FromBytes, ToBytes, router};
 use rtnetlink::{Handle, new_connection};
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, sa_family_t};
 
 use crate::backend::functions::list_interfaces;
 use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
-use crate::wifi::helper::{get_interfaces, validate_packet};
+use crate::wifi::helper::{
+    create_packet_sockaddr, generate_client_id, get_interfaces, validate_packet, validate_packet_v2,
+};
 
 pub async fn connect(
     mac_address: [u8; 6],
@@ -435,29 +441,11 @@ pub fn request_host_data(
     bind_socket_to_device(&send_socket, ifname)?;
 
     let socket = socket2::Socket::new(
-        Domain::from(libc::AF_PACKET),
-        Type::from(libc::SOCK_RAW),
+        Domain::PACKET,
+        Type::RAW,
         Some(Protocol::from(libc::ETH_P_IP)),
     )?;
-    let sockaddr = unsafe {
-        let mut ll: libc::sockaddr_ll = std::mem::zeroed();
-        ll.sll_family = libc::AF_PACKET as u16;
-        ll.sll_ifindex = *ifindex as i32;
-        ll.sll_protocol = (libc::ETH_P_IP as u16).to_be(); // 0x800
-        //
-        let mut storage: libc::sockaddr_storage = std::mem::zeroed();
-        std::ptr::copy_nonoverlapping(
-            &ll as *const libc::sockaddr_ll as *const u8,
-            &mut storage as *mut libc::sockaddr_storage as *mut u8,
-            std::mem::size_of::<libc::sockaddr_ll>(),
-        );
-
-        // wrapping in socket2 addr
-        SockAddr::new(
-            std::mem::transmute_copy(&storage),
-            std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t,
-        )
-    };
+    let sockaddr = create_packet_sockaddr(*ifindex);
     socket.bind(&sockaddr)?;
 
     for _ in 0..total_retries {
@@ -505,7 +493,7 @@ pub fn request_host_data(
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
                     let packet =
-                        validate_packet(initialized_data, size)?.expect("No Packet Found.");
+                        validate_packet_v2(initialized_data, size)?.expect("No Packet Found.");
 
                     if packet.xid != msg.xid {
                         continue;
@@ -524,10 +512,8 @@ pub fn request_host_data(
                                 }
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
-                            DhcpOption::Router(routers) => {
-                                if !routers.is_empty() {
-                                    gateway = Some(routers[0]);
-                                }
+                            DhcpOption::Router(routers) if !routers.is_empty() => {
+                                gateway = Some(routers[0]);
                             }
                             DhcpOption::SubnetMask(subnet) => subnet_mask = Some(subnet),
                             DhcpOption::ServerIdentifier(id) => server_id = Some(id),
@@ -564,97 +550,176 @@ pub fn request_host_data(
 pub fn get_current_host_data(
     mac_address: [u8; 6],
     current_ip: Ipv4Addr,
+    server_ip: Ipv4Addr,
 ) -> Result<DhcpLease, Box<dyn Error>> {
     let current_iface = find_active_interface()?.expect("No Active Interface Found.");
     let ifname = current_iface.ifname.expect("No Ifname found.");
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    let ifindex = current_iface.ifindex.expect("No Ifindex found.");
+    let socket = socket2::Socket::new(
+        Domain::PACKET,
+        Type::RAW,
+        Some(Protocol::from(libc::ETH_P_IP)),
+    )?;
+    // let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    let local_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 68);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 68);
-    let dest = "255.255.255.255:67";
-    socket.set_reuse_address(true)?;
-    #[cfg(all(unix, not(target_os = "solaris")))]
-    socket.set_reuse_port(true)?;
-    socket.bind(&addr.into())?;
-    let udp_socket: UdpSocket = socket.into();
+    let std_addr = SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), 67);
+    let send_socket = UdpSocket::bind(addr)?;
+    // let std_addr = SocketAddrV4::new(server_ip, 67);
 
-    bind_socket_to_device(&udp_socket, &ifname)?;
+    let sockaddr = create_packet_sockaddr(ifindex);
+    socket.bind(&sockaddr)?;
+    send_socket.set_broadcast(true)?;
 
-    udp_socket.set_broadcast(true)?;
-    udp_socket.set_read_timeout(Some(Duration::from_secs(10)))?;
+    bind_socket_to_device(&send_socket, &ifname)?;
+    socket.bind_device(Some(ifname.as_bytes()))?;
+    // let assigned_port = socket.local_addr()?;
+    // println!(
+    //     "Assigned port: {}",
+    //     assigned_port.as_socket_ipv4().unwrap().port()
+    // );
 
-    for _ in 0..5 {
-        let msg = Packet {
-            reply: false,
-            xid: rand::random(),
-            ciaddr: current_ip,
-            chaddr: mac_address,
-            hops: 0,
-            secs: 0,
-            broadcast: false,
-            yiaddr: Ipv4Addr::new(0, 0, 0, 0),
-            siaddr: Ipv4Addr::new(0, 0, 0, 0),
-            giaddr: Ipv4Addr::new(0, 0, 0, 0),
-            options: vec![
-                DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Inform),
-                DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
-            ],
-        };
+    let timeout = Instant::now() + Duration::from_secs(5);
 
-        let timeout = Instant::now() + Duration::from_secs(3);
-        let mut buf = [0u8; 1500];
-        let encoded = msg.encode(&mut buf);
-        udp_socket.send_to(encoded, dest)?;
-        let mut lease = DhcpLease::default();
-        let mut res_buf = [0u8; 1500];
-        loop {
-            let now = Instant::now();
-            if now >= timeout {
-                break;
-            }
-            match udp_socket.recv_from(&mut res_buf) {
-                Ok((size, _)) => {
-                    let raw_data = &res_buf[..size];
-                    let packet = match validate_packet(raw_data, size)? {
-                        Some(p) => p,
-                        _ => continue,
-                    };
+    let duid_payload = generate_client_id(mac_address);
+    let client_id = DhcpOption::Unrecognized(RawDhcpOption {
+        code: 61,
+        data: duid_payload,
+    });
+    let vendor_id = DhcpOption::Unrecognized(RawDhcpOption {
+        code: 60,
+        data: "dhcpcd-9.4.1".as_bytes().to_vec(),
+        // [65,78,68,82,79,73,68,95,77,69,84,69,82,69,68]
+    });
 
-                    if packet.xid != msg.xid {
-                        continue;
+    // 1500 - 20 (IP header) - 8 (UDP header)
+    let msz_bytes = 1472u16.to_be_bytes().to_vec();
+    let msz_option = DhcpOption::Unrecognized(RawDhcpOption {
+        code: 57,
+        data: msz_bytes,
+    });
+
+    let msg = Packet {
+        reply: false,
+        xid: rand::random(),
+        ciaddr: current_ip,
+        // chaddr: mac_address,
+        chaddr: [
+            mac_address[0],
+            mac_address[1],
+            mac_address[2],
+            mac_address[3],
+            mac_address[4],
+            mac_address[5],
+        ],
+        hops: 0,
+        secs: 0,
+        broadcast: false,
+        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+        siaddr: Ipv4Addr::new(0, 0, 0, 0),
+        giaddr: Ipv4Addr::new(0, 0, 0, 0),
+        options: vec![
+            DhcpOption::DhcpMessageType(MessageType::Request),
+            // DhcpOption::RequestedIpAddress(current_ip),
+            // client_id,
+            vendor_id,
+            // msz_option,
+            DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
+        ],
+    };
+
+    let mut buf = [0u8; 1500];
+    let encoded = msg.encode(&mut buf);
+    send_socket.send_to(encoded, std_addr)?;
+    // socket.set_read_timeout(Some(Duration::from_millis(3000)))?;
+    // socket.set_write_timeout(Some(Duration::from_millis(3000)))?;
+    let mut lease = DhcpLease::default();
+    let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
+    // let mut res_buf = [0u8; 4096];
+    println!("Checkpoint 0");
+
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let start = Instant::now();
+        if start >= timeout {
+            println!("Timeout");
+            break;
+        }
+        match socket.recv(&mut res_buf) {
+            Ok(size) => {
+                println!("Checkpoint 1");
+                let raw_data =
+                    unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
+                println!("raw_data: {:?}", raw_data);
+                // let raw_data = &res_buf[..size];
+                let packet = match validate_packet_v2(raw_data, size)? {
+                    Some(s) => {
+                        println!("Packet successful");
+                        println!("recieved options: {:#?}", s.options);
+                        s
                     }
-                    for option in packet.options {
-                        match option {
-                            DhcpOption::DhcpMessageType(val) => match val {
-                                MessageType::Ack => {
-                                    lease.ip_addr = if packet.yiaddr.is_unspecified() {
-                                        Some(current_ip)
-                                    } else {
-                                        Some(packet.yiaddr)
-                                    };
-                                }
-                                MessageType::Nak => {
-                                    let _ = cwrite("Server Refused to acknwoledge.".to_string());
-                                }
-                                _ => {}
-                            },
-                            DhcpOption::DomainNameServer(ips) => lease.dns_servers = ips,
-                            DhcpOption::Router(routers) if !routers.is_empty() => {
-                                lease.gateway = Some(routers[0]);
-                            }
-                            DhcpOption::SubnetMask(subnet) => lease.subnet_mask = Some(subnet),
-                            DhcpOption::ServerIdentifier(id) => lease.server_id = Some(id),
-                            DhcpOption::IpAddressLeaseTime(secs) => lease.lease_duration = secs,
-                            _ => {}
-                        }
+                    None => {
+                        print!("Conversion Error");
+                        break;
                     }
-                    lease.offer = Some(msg);
-                    return Ok(lease);
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                };
+                // let packet = match Packet::from(raw_data) {
+                //     Ok(s) => {
+                //         println!("Packet successful");
+                //         println!("recieved options: {:#?}", s.options);
+                //         s
+                //     }
+                //     Err(e) => {
+                //         println!("Conversion error");
+                //         break;
+                //     }
+                // };
+                if packet.xid != msg.xid {
                     continue;
                 }
-                Err(e) => {
-                    return Err(e.into());
+                println!(
+                    "packet recieved: {:#?}, packet expected: {:#?}",
+                    packet.xid, msg.xid
+                );
+                for option in packet.options {
+                    println!("Checkpoint 2");
+                    match option {
+                        DhcpOption::DhcpMessageType(val) => match val {
+                            MessageType::Ack => {
+                                println!("Server acknwoledgeeed");
+                                lease.ip_addr = if packet.yiaddr.is_unspecified() {
+                                    Some(current_ip)
+                                } else {
+                                    Some(packet.yiaddr)
+                                };
+                            }
+                            MessageType::Nak => {
+                                println!("Server Refused");
+                                let _ = cwrite("Server Refused to acknwoledge.".to_string());
+                            }
+                            _ => {}
+                        },
+                        DhcpOption::DomainNameServer(ips) => lease.dns_servers = ips,
+                        DhcpOption::Router(routers) if !routers.is_empty() => {
+                            lease.gateway = Some(routers[0]);
+                        }
+                        DhcpOption::SubnetMask(subnet) => lease.subnet_mask = Some(subnet),
+                        DhcpOption::ServerIdentifier(id) => lease.server_id = Some(id),
+                        DhcpOption::IpAddressLeaseTime(secs) => lease.lease_duration = secs,
+                        _ => {}
+                    }
+                    println!("DhcpLease: {:#?}", lease);
                 }
+                lease.offer = Some(msg);
+                return Ok(lease);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("Wouldblock error");
+                continue;
+            }
+            Err(e) => {
+                print!("Error, {}", e);
+                return Err(e.into());
             }
         }
     }

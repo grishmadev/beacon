@@ -195,7 +195,11 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.previous();
             }
-            KeyCode::Tab | KeyCode::Right | KeyCode::Left => {
+            KeyCode::Tab
+            | KeyCode::Right
+            | KeyCode::Left
+            | KeyCode::Char('h')
+            | KeyCode::Char('l') => {
                 self.toggle_tab();
             }
             _ => {}

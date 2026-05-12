@@ -23,6 +23,7 @@ use crate::{
         wpa_supplicant::{find_active_interface, request_host_data},
     },
 };
+use futures::future;
 
 const RETRIES: u32 = 5;
 
@@ -47,6 +48,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let active_interface = find_active_interface();
     let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
     let mut response = Response::Error("Uninitialized Response".into());
+
     for _ in 0..RETRIES {
         response = match cmd {
             Command::Ping => Response::Pong,
@@ -90,17 +92,19 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             },
             Command::CurrentConnection => {
-                let mut response: Response = Response::Error("Uninitialized Responpse".into());
-                for _ in 0..5 {
-                    response = match current_connection() {
-                        Ok(curcon) => Response::CurrentConnection(curcon),
-                        Err(err) => {
-                            response = Response::Error(err.to_string());
-                            continue;
-                        }
-                    };
+                // let mut response: Response = Response::Error("Uninitialized Response".into());
+                // let response = tokio::task::spawn_blocking(move || match current_connection() {
+                //     Ok(curcon) => Response::CurrentConnection(curcon),
+                //     Err(err) => Response::Error(err.to_string()),
+                // })
+                // .await
+                // .unwrap_or(Response::Error("Thread Panicked".into()));
+                //
+                // response
+                match current_connection() {
+                    Ok(curcon) => Response::CurrentConnection(curcon),
+                    Err(err) => Response::Error(err.to_string()),
                 }
-                response
             }
 
             Command::Disconnect => match disconnect_connection(&active_ifname) {

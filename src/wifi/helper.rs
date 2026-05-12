@@ -16,7 +16,7 @@ use neli::{
     attr::Attribute,
     consts::{
         genl::{CtrlAttr, CtrlAttrMcastGrp, CtrlCmd},
-        nl::{GenlId, NlmF, Nlmsg},
+        nl::{GenlId, NlmF},
         rtnl::{Arphrd, Iff, Ifla, RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot},
         socket::{Msg, NlFamily},
     },
@@ -27,6 +27,8 @@ use neli::{
     types::{Buffer, GenlBuffer, RtBuffer},
     utils::Groups,
 };
+use socket2::SockAddr;
+use std::fs;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::{
     error::Error,
@@ -413,42 +415,38 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                         connection.ifname = Some(name);
                     }
 
-                    Nl80211Attr::AttrMac => {
-                        if payload.len() >= 6 {
-                            let mac = payload[..6]
-                                .iter()
-                                .map(|b| format!("{b:02X}"))
-                                .collect::<Vec<_>>()
-                                .join(":");
-                            connection.mac = Some(mac);
-                        }
+                    Nl80211Attr::AttrMac if payload.len() >= 6 => {
+                        let mac = payload[..6]
+                            .iter()
+                            .map(|b| format!("{b:02X}"))
+                            .collect::<Vec<_>>()
+                            .join(":");
+                        connection.mac = Some(mac);
+                    }
+                    Nl80211Attr::AttrIfindex if payload.len() >= 4 => {
+                        let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
+                        connection.ifindex = Some(ifindex);
                     }
 
-                    Nl80211Attr::AttrIfindex => {
-                        if payload.len() >= 4 {
-                            let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
-                            connection.ifindex = Some(ifindex);
-                            let hosts = get_scan(family_id, ifindex)?;
-                            match hosts.into_iter().find(|h| h.is_connected) {
-                                Some(host) => {
-                                    connection.ssid = host.ssid;
-                                    connection.bssid = host.bssid;
-                                    connection.frequency = host.frequency;
-                                }
-                                None => return Ok(None),
-                            }
-                        }
-                    }
-
-                    _ => {
-                        let _ = write(format!("{:#?}", String::from_utf8_lossy(payload)));
-                    }
+                    _ => {}
                 }
             }
+            if let Some(ifindex) = connection.ifindex {
+                let hosts = get_scan(family_id, ifindex)?;
+                match hosts.into_iter().find(|h| h.is_connected) {
+                    Some(host) => {
+                        connection.ssid = host.ssid;
+                        connection.bssid = host.bssid;
+                        connection.frequency = host.frequency;
+                    }
+                    None => return Ok(None),
+                };
+            }
+            let gateway = get_gateway_ip().unwrap();
             if let Some(mac) = connection.mac.clone()
                 && let Ok(Some(ip)) = get_current_ip()
             {
-                let extra_data = get_current_host_data(mac_to_bytes(&mac), ip)?;
+                let extra_data = get_current_host_data(mac_to_bytes(&mac), ip, gateway)?;
                 connection.ip_addr = extra_data.ip_addr;
                 connection.subnet_mask = extra_data.subnet_mask;
                 connection.gateway = extra_data.gateway;
@@ -552,14 +550,18 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
         let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
         if let NlPayload::Err(e) = res.nl_payload() {
-            return Err(format!("Kernel Error: {}", e).into());
+            if e.error() == &-16 {
+                // Resource Busy
+                print!("Retrying, {}", e);
+                continue;
+            }
+            return Err(format!("Error from trigger_scan: {}", e).into());
         }
 
         if let NlPayload::Payload(genl) = res.nl_payload() {
             match Nl80211Cmd::from(*genl.cmd()) {
                 Nl80211Cmd::CmdNewScanResults => {
                     // scanning finished, new results in cache
-                    // println!("Scan Complete...");
                     break;
                 }
                 Nl80211Cmd::CmdScanAborted => {
@@ -629,4 +631,88 @@ pub fn validate_packet(
     let dhcp_data = &initialized_data[42..];
     let packet = Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
     Ok(Some(packet))
+}
+
+pub fn validate_packet_v2(
+    initialized_data: &[u8],
+    size: usize,
+) -> Result<Option<Packet>, Box<dyn Error>> {
+    if size < 42 {
+        return Ok(None);
+    }
+    // Protocol Check
+    if initialized_data[23] != 17 {
+        return Ok(None);
+    }
+    // Dynamic IP Header Length
+    // The lower 4 bits of the first IP byte (at index 14) is the IHL.
+    // It represents the number of 32-bit words.
+    let ihl = (initialized_data[14] & 0x0F) as usize * 4;
+    let udp_start = 14 + ihl;
+    let dhcp_start = udp_start + 8;
+
+    if size < dhcp_start {
+        return Ok(None);
+    }
+
+    let dest_port = u16::from_be_bytes([
+        initialized_data[udp_start + 2],
+        initialized_data[udp_start + 3],
+    ]);
+    if dest_port != 68 {
+        return Ok(None);
+    }
+    // if initialized_data[42] != 2 {
+    //     return Ok(None);
+    // };
+    let dhcp_data = &initialized_data[dhcp_start..size];
+    let packet = Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
+    Ok(Some(packet))
+}
+
+pub fn get_gateway_ip() -> Option<Ipv4Addr> {
+    let content = fs::read_to_string("/proc/net/route").ok()?;
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Destination 00000000 means the default route
+        if fields.get(1)? == &"00000000" {
+            let gw_hex = fields.get(2)?;
+            let gw_u32 = u32::from_str_radix(gw_hex, 16).ok()?;
+            // IPs in /proc are stored in Little Endian hex
+            return Some(Ipv4Addr::from(u32::from_be(gw_u32)));
+        }
+    }
+    None
+}
+
+pub fn create_packet_sockaddr(ifindex: u32) -> SockAddr {
+    let mut ll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+    ll.sll_family = libc::AF_PACKET as u16;
+    ll.sll_ifindex = ifindex as i32;
+    ll.sll_protocol = (libc::ETH_P_IP as u16).to_be();
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            &ll as *const libc::sockaddr_ll as *const u8,
+            &mut storage as *mut libc::sockaddr_storage as *mut u8,
+            std::mem::size_of::<libc::sockaddr_ll>(),
+        );
+
+        SockAddr::new(
+            std::mem::transmute::<libc::sockaddr_storage, socket2::SockAddrStorage>(storage),
+            std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t,
+        )
+    }
+}
+
+pub fn generate_client_id(mac: [u8; 6]) -> Vec<u8> {
+    let mut id = Vec::with_capacity(10);
+    // DUID Type 3 (Link-layer address)
+    id.extend_from_slice(&[0x00, 0x03]);
+    // Hardware type: Ethernet (1)
+    id.extend_from_slice(&[0x00, 0x01]);
+    // The MAC address
+    id.extend_from_slice(&mac);
+    id
 }
