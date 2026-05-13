@@ -155,10 +155,12 @@ pub async fn connect(
             Err(_) => return Err("connection timed out after 10 secs.".into()),
         }
     }
-    let host_data = request_host_data(ifindex, ifname, mac_address)?;
+    // Discover packet sent here
+    let host_data = discover_host(ifindex, ifname, mac_address)?;
     cwrite(format!("host data: {:#?}", host_data));
 
     if let Some(offer) = &host_data.offer {
+        // Request packet sent here
         send_dhcp_request(offer, host_data.ip_addr.unwrap(), ifname)?;
     }
 
@@ -380,7 +382,7 @@ fn send_dhcp_request(
 
     socket.send_to(data, dest)?;
 
-    cwrite(format!(
+    println!(
         "DHCPREQUESST msg sent for IP: {:?}",
         request_packet.options.iter().find_map(|opt| {
             if let dhcp4r::options::DhcpOption::RequestedIpAddress(ip) = opt {
@@ -389,7 +391,7 @@ fn send_dhcp_request(
                 None
             }
         }),
-    ));
+    );
 
     Ok(())
 }
@@ -426,7 +428,7 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
-pub fn request_host_data(
+pub fn discover_host(
     ifindex: &u32,
     ifname: &str,
     mac_address: [u8; 6],
@@ -547,10 +549,11 @@ pub fn request_host_data(
     Err("Failed after retry.".into())
 }
 
-pub fn get_current_host_data(
+pub fn request_host(
     mac_address: [u8; 6],
     current_ip: Ipv4Addr,
-    server_ip: Ipv4Addr,
+    server_id: Ipv4Addr,
+    broadcast: bool,
 ) -> Result<DhcpLease, Box<dyn Error>> {
     let current_iface = find_active_interface()?.expect("No Active Interface Found.");
     let ifname = current_iface.ifname.expect("No Ifname found.");
@@ -560,10 +563,15 @@ pub fn get_current_host_data(
         Type::RAW,
         Some(Protocol::from(libc::ETH_P_IP)),
     )?;
-    // let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    let local_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 68);
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 68);
-    let std_addr = SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), 67);
+    let std_addr = SocketAddrV4::new(
+        if broadcast {
+            Ipv4Addr::new(255, 255, 255, 255)
+        } else {
+            server_id
+        },
+        67,
+    );
     let send_socket = UdpSocket::bind(addr)?;
     // let std_addr = SocketAddrV4::new(server_ip, 67);
 
@@ -588,8 +596,7 @@ pub fn get_current_host_data(
     });
     let vendor_id = DhcpOption::Unrecognized(RawDhcpOption {
         code: 60,
-        data: "dhcpcd-9.4.1".as_bytes().to_vec(),
-        // [65,78,68,82,79,73,68,95,77,69,84,69,82,69,68]
+        data: "beacon-0.1".as_bytes().to_vec(),
     });
 
     // 1500 - 20 (IP header) - 8 (UDP header)
@@ -603,27 +610,15 @@ pub fn get_current_host_data(
         reply: false,
         xid: rand::random(),
         ciaddr: current_ip,
-        // chaddr: mac_address,
-        chaddr: [
-            mac_address[0],
-            mac_address[1],
-            mac_address[2],
-            mac_address[3],
-            mac_address[4],
-            mac_address[5],
-        ],
+        chaddr: mac_address,
         hops: 0,
         secs: 0,
-        broadcast: false,
+        broadcast,
         yiaddr: Ipv4Addr::new(0, 0, 0, 0),
         siaddr: Ipv4Addr::new(0, 0, 0, 0),
         giaddr: Ipv4Addr::new(0, 0, 0, 0),
         options: vec![
             DhcpOption::DhcpMessageType(MessageType::Request),
-            // DhcpOption::RequestedIpAddress(current_ip),
-            // client_id,
-            vendor_id,
-            // msz_option,
             DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]),
         ],
     };
@@ -663,17 +658,6 @@ pub fn get_current_host_data(
                         break;
                     }
                 };
-                // let packet = match Packet::from(raw_data) {
-                //     Ok(s) => {
-                //         println!("Packet successful");
-                //         println!("recieved options: {:#?}", s.options);
-                //         s
-                //     }
-                //     Err(e) => {
-                //         println!("Conversion error");
-                //         break;
-                //     }
-                // };
                 if packet.xid != msg.xid {
                     continue;
                 }
@@ -681,8 +665,8 @@ pub fn get_current_host_data(
                     "packet recieved: {:#?}, packet expected: {:#?}",
                     packet.xid, msg.xid
                 );
+                println!("Checkpoint 2");
                 for option in packet.options {
-                    println!("Checkpoint 2");
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
@@ -708,13 +692,12 @@ pub fn get_current_host_data(
                         DhcpOption::IpAddressLeaseTime(secs) => lease.lease_duration = secs,
                         _ => {}
                     }
-                    println!("DhcpLease: {:#?}", lease);
                 }
                 lease.offer = Some(msg);
                 return Ok(lease);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("Wouldblock error");
+                println!("WouldBlock Error");
                 continue;
             }
             Err(e) => {

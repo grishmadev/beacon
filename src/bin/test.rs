@@ -1,13 +1,14 @@
 use beacon::{
     Command, Response,
-    backend::functions::{disconnect_connection, list_interfaces},
+    backend::functions::{disconnect_connection, list_active_signals, list_interfaces},
     executer::execute,
     mac_to_bytes,
     wifi::{
-        helper::{get_current_ip, get_gateway_ip},
-        wpa_supplicant::get_current_host_data,
+        helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
+        wpa_supplicant::request_host,
     },
 };
+use chrono::{TimeZone, Utc};
 
 #[tokio::main]
 async fn main() {
@@ -23,6 +24,8 @@ async fn main() {
                 .starts_with("wl")
         })
         .unwrap();
+    let ifindex = interface.ifindex.unwrap();
+    let family_info = get_family_info().unwrap();
     // let cmd = Command::ListActiveConnections(interface.clone());
     // let response = execute(&cmd).await.unwrap();
     let mac = mac_to_bytes(&interface.mac.clone().unwrap());
@@ -30,19 +33,19 @@ async fn main() {
     let server_id = get_gateway_ip();
     // let server_ip = get
     println!("current_ip: {:#?}", current_ip);
-    loop {
-        match get_current_host_data(mac, current_ip, get_gateway_ip().unwrap()) {
-            Ok(s) => {
-                println!("response: {:#?}", s);
-                break;
-            }
-            Err(e) => {
-                println!("Error: {:#?}", e);
-                // continue;
-                break;
-            }
-        };
-    }
 
-    // disconnect_connection("wlo1");
+    let hosts = list_active_signals(&family_info, interface.clone());
+    println!("hosts: {:#?}", hosts);
+    // loop {
+    // match request_host(mac, current_ip, get_gateway_ip().unwrap(), true) {
+    //     Ok(s) => {
+    //         println!("response: {:#?}", s);
+    //         // break;
+    //     }
+    //     Err(e) => {
+    //         println!("Error: {:#?}", e);
+    //         // continue;
+    //         // break;
+    //     } // };
+    // }
 }

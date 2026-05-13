@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     io::{Read, Write},
+    ops::{Add, AddAssign, Mul},
     os::unix::net::UnixStream,
     sync::{
         Arc,
@@ -11,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{TimeZone, Utc};
+
 use crate::{
     Command, Response, SOCKET_PATH,
     backend::functions::{
@@ -18,12 +21,13 @@ use crate::{
         list_all_signals,
     },
     debug::write,
+    types::DhcpLease,
     wifi::{
+        dhcp_connection::{DhcpFile, DhcpStorage},
         helper::{get_family_info, get_interfaces, renew_connection},
-        wpa_supplicant::{find_active_interface, request_host_data},
+        wpa_supplicant::find_active_interface,
     },
 };
-use futures::future;
 
 const RETRIES: u32 = 5;
 
@@ -77,45 +81,26 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 password,
             } => match connect_to(&family_info, &interfaces, iface, bssid, password).await {
                 Ok(_) => {
-                    let stop_signal = Arc::new(AtomicBool::new(true));
-                    let signal_for_thread = Arc::clone(&stop_signal);
-                    let ifname = iface.ifname.clone().unwrap();
-                    let id =
-                        spawn_lease_manager(ifname, Duration::from_secs(3600), signal_for_thread)?;
-                    let thread_handle = TimeTracker {
-                        thread: Some(id),
-                        stop_signal,
-                    };
-
+                    manage_lease_thread()?;
                     Response::Connected
                 }
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             },
-            Command::CurrentConnection => {
-                // let mut response: Response = Response::Error("Uninitialized Response".into());
-                // let response = tokio::task::spawn_blocking(move || match current_connection() {
-                //     Ok(curcon) => Response::CurrentConnection(curcon),
-                //     Err(err) => Response::Error(err.to_string()),
-                // })
-                // .await
-                // .unwrap_or(Response::Error("Thread Panicked".into()));
-                //
-                // response
-                match current_connection() {
-                    Ok(curcon) => Response::CurrentConnection(curcon),
-                    Err(err) => Response::Error(err.to_string()),
-                }
-            }
+            Command::CurrentConnection => match current_connection() {
+                Ok(curcon) => Response::CurrentConnection(curcon),
+                Err(err) => Response::Error(err.to_string()),
+            },
 
             Command::Disconnect => match disconnect_connection(&active_ifname) {
-                Ok(_) => Response::Ok,
-                Err(e) => Response::Error("Couldn't Disconnect.".into()),
+                Ok(_) => Response::Disconnected,
+                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e).into()),
             },
 
             Command::Tick => Response::Tick,
             _ => Response::Error("Unknown Command.".into()),
         };
         if let Response::Error(_) = response {
+            println!("Command not Implemented.");
             continue;
         } else {
             break;
@@ -124,35 +109,53 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     Ok(response)
 }
 
-pub fn spawn_lease_manager(
-    ifname: String,
-    lease_duration: Duration,
-    stop_signal: Arc<AtomicBool>,
-) -> Result<JoinHandle<()>, Box<dyn Error>> {
-    let handle = std::thread::spawn(move || {
-        let start = Instant::now();
-        let t1 = lease_duration.div_f32(2.0);
-        let t2 = lease_duration.mul_f32(0.875);
-
-        let mut renewed = false;
-        while stop_signal.load(std::sync::atomic::Ordering::Relaxed) {
-            let elapsed = start.elapsed();
-
-            if elapsed >= lease_duration {
-                let _ = write(format!("[{}] Lease Expired. Dropping IP.", ifname));
+pub fn manage_lease_thread() -> Result<(), Box<dyn Error>> {
+    thread::spawn(move || {
+        loop {
+            let info = DhcpStorage::read_file();
+            if let Ok(Some(content)) = info {
+                let time_init = content.time_initiated;
+                let ls_dur = content.lease_duration as i64;
+                manage_lease(time_init, ls_dur);
+            } else {
                 break;
             }
-            if elapsed >= t2 {
-                renew_connection(true);
-            } else if elapsed >= t1 && !renewed {
-                if renew_connection(false).is_ok() {
-                    renewed = true;
-                };
-            }
-            std::thread::sleep(Duration::from_millis(500));
         }
     });
-    Ok(handle)
+
+    Ok(())
+}
+
+fn manage_lease(time_init: i64, ls_dur: i64) {
+    let now = Utc::now();
+    let t1 = Utc.timestamp_opt((ls_dur / 2) + time_init, 0).single();
+    let t2 = Utc
+        .timestamp_opt((ls_dur as f64).mul(0.875) as i64 + time_init, 0)
+        .single();
+    if let Some(t1) = t1
+        && let Some(t2) = t2
+    {
+        let data = if now > t2 {
+            renew_connection(true)
+        } else if now > t1 {
+            renew_connection(false)
+        } else {
+            Err("Nothing happened.".into())
+        };
+        if let Ok(Some(data)) = data {
+            DhcpStorage::write_file(&mut DhcpFile {
+                ip_addr: data.ip_addr,
+                subnet_mask: data.subnet_mask,
+                gateway: data.gateway,
+                dns_servers: data.dns_servers,
+                server_id: data.server_id,
+                lease_duration: data.lease_duration,
+                ..Default::default()
+            });
+        };
+    } else {
+        panic!("Cannot parse time.");
+    }
 }
 
 pub async fn response(cmd: &Command) -> Result<Response, Box<dyn Error>> {

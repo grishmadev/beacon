@@ -1,40 +1,30 @@
-use crate::debug::write;
 use crate::mac_to_bytes;
-use crate::types::{CurrentConnection, FamilyInfo, Host, Interface, InterfaceType};
-use crate::wifi::wpa_supplicant::{
-    find_active_interface, get_current_host_data, request_host_data,
-};
-use dhcp4r::options::DhcpOption;
+use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
+use crate::wifi::wpa_supplicant::{find_active_interface, request_host};
 use dhcp4r::packet::Packet;
-use dhcp4r::server;
 use neli::consts::rtnl::Ifa;
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder};
 use neli::socket::synchronous::NlSocketHandle;
-use neli::types::NlBuffer;
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
     consts::{
         genl::{CtrlAttr, CtrlAttrMcastGrp, CtrlCmd},
         nl::{GenlId, NlmF},
-        rtnl::{Arphrd, Iff, Ifla, RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot},
+        rtnl::{Arphrd, Iff, Ifla, RtAddrFamily, RtScope, Rtm},
         socket::{Msg, NlFamily},
     },
     genl::{AttrType, AttrTypeBuilder, Genlmsghdr, GenlmsghdrBuilder, Nlattr, NlattrBuilder},
     nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder},
-    rtnl::{Ifinfomsg, IfinfomsgBuilder, RtmsgBuilder},
+    rtnl::{Ifinfomsg, IfinfomsgBuilder},
     socket::NlSocket,
-    types::{Buffer, GenlBuffer, RtBuffer},
+    types::{Buffer, GenlBuffer},
     utils::Groups,
 };
 use socket2::SockAddr;
 use std::fs;
-use std::net::{Ipv4Addr, UdpSocket};
-use std::{
-    error::Error,
-    io::Cursor,
-    path::{self, Path},
-};
+use std::net::Ipv4Addr;
+use std::{error::Error, io::Cursor, path::Path};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
 
@@ -150,7 +140,6 @@ pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error>> {
 pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error>> {
     let mut result = Vec::<Host>::new();
     let sock = NlSocket::new(NlFamily::Generic)?;
-    // Read the interface card
 
     // Build from ifindex attribute
     let attr_type: AttrType<u16> = AttrTypeBuilder::default()
@@ -208,9 +197,9 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                     let mut cursor = Cursor::new(bss_bytes);
                     // parsing the nested byte as a flatlsit
                     // initialize Host
-                    let mut target = Host::new();
 
                     while cursor.position() < bss_bytes.len() as u64 {
+                        let mut target = Host::new();
                         while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut cursor) {
                             match Nl80211Bss::from(*nested.nla_type().nla_type()) {
                                 Nl80211Bss::BssBssid => {
@@ -279,9 +268,9 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                         //     break;
                         // }
                         // add target to result
+                        result.push(target);
                     }
                     // println!("host: {:#?}", target);
-                    result.push(target);
                 }
             }
         }
@@ -446,7 +435,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
             if let Some(mac) = connection.mac.clone()
                 && let Ok(Some(ip)) = get_current_ip()
             {
-                let extra_data = get_current_host_data(mac_to_bytes(&mac), ip, gateway)?;
+                let extra_data = request_host(mac_to_bytes(&mac), ip, gateway, true)?;
                 connection.ip_addr = extra_data.ip_addr;
                 connection.subnet_mask = extra_data.subnet_mask;
                 connection.gateway = extra_data.gateway;
@@ -576,39 +565,21 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
     Ok(())
 }
 
-pub fn renew_connection(broadcast: bool) -> Result<(), Box<dyn Error>> {
+pub fn renew_connection(broadcast: bool) -> Result<Option<DhcpLease>, Box<dyn Error>> {
     let family_info = get_family_info()?;
     let family_id = family_info.id;
     let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
-    let host_ip = current.ip_addr.expect("No IP Address found.");
+
+    // IP for this client (This Device)
+    let current_ip = current.ip_addr.expect("No IP Address found.");
     let mac = current.mac.expect("No MAC Address found.");
+    let mac_address = mac_to_bytes(&mac);
+
+    // IP of the server
     let server_id = current.server_id.expect("NO Server ID found.");
-    let renewal_packet = Packet {
-        reply: false,
-        hops: 0,
-        xid: rand::random(),
-        secs: 0,
-        broadcast: false,
-        ciaddr: host_ip,
-        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
-        giaddr: Ipv4Addr::new(0, 0, 0, 0),
-        siaddr: Ipv4Addr::new(0, 0, 0, 0),
-        chaddr: mac_to_bytes(&mac),
-        options: vec![
-            DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Request),
-            DhcpOption::ServerIdentifier(host_ip),
-        ],
-    };
-    let socket = UdpSocket::bind("0.0.0.0:68")?;
-    let mut bytes = Vec::<u8>::new();
-    renewal_packet.encode(&mut bytes);
-    let dest = if broadcast {
-        Ipv4Addr::new(255, 255, 255, 255)
-    } else {
-        server_id
-    };
-    socket.send_to(&bytes, (dest, 67))?;
-    Ok(())
+
+    let data = request_host(mac_address, current_ip, server_id, broadcast)?;
+    Ok(Some(data))
 }
 
 pub fn validate_packet(

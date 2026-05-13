@@ -20,13 +20,14 @@ pub fn mac_to_bytes(mac: &str) -> [u8; 6] {
     res
 }
 /*
-*********************************
+********************************
 *           GLOBAL TYPES        *
 *********************************
 */
 
 pub const SOCKET_PATH: &str = "/run/beacon.sock";
 pub const HISTORY_PATH: &str = "/var/beacon_history.json";
+pub const DHCPINFO_PATH: &str = "/var/beacon_dhcp_info";
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Command {
@@ -58,6 +59,7 @@ pub enum Response {
     AllInterfaces(Vec<Interface>),
     Notification(String),
     Connected,
+    Disconnected,
     ClearNotification,
     Error(String),
 }

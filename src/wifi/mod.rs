@@ -1,3 +1,4 @@
+pub mod dhcp_connection;
 pub mod helper;
 pub mod history;
 pub mod wpa_supplicant;
