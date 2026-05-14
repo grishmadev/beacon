@@ -318,6 +318,8 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
     for dns in dns_servers {
         config_lines.push(format!("nameserver {}", dns));
     }
+    config_lines.push("nameserver 8.8.8.8".to_string());
+    config_lines.push("nameserver 1.1.1.1".to_string());
     cwrite(format!("dns: {}", config_lines.join("\n")));
     match write("/etc/resolv.conf", config_lines.join("\n")) {
         Ok(_) => cwrite("DNS set!".into()),
@@ -583,7 +585,7 @@ pub fn request_host(
     let socket = socket2::Socket::new(
         Domain::PACKET,
         Type::RAW,
-        Some(Protocol::from(libc::ETH_P_IP)),
+        Some(Protocol::from(libc::ETH_P_ALL)),
     )?;
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 68);
     let std_addr = SocketAddrV4::new(
@@ -603,30 +605,8 @@ pub fn request_host(
 
     bind_socket_to_device(&send_socket, &ifname)?;
     socket.bind_device(Some(ifname.as_bytes()))?;
-    // let assigned_port = socket.local_addr()?;
-    // println!(
-    //     "Assigned port: {}",
-    //     assigned_port.as_socket_ipv4().unwrap().port()
-    // );
 
     let timeout = Instant::now() + Duration::from_secs(5);
-
-    let duid_payload = generate_client_id(mac_address);
-    let client_id = DhcpOption::Unrecognized(RawDhcpOption {
-        code: 61,
-        data: duid_payload,
-    });
-    let vendor_id = DhcpOption::Unrecognized(RawDhcpOption {
-        code: 60,
-        data: "beacon-0.1".as_bytes().to_vec(),
-    });
-
-    // 1500 - 20 (IP header) - 8 (UDP header)
-    let msz_bytes = 1472u16.to_be_bytes().to_vec();
-    let msz_option = DhcpOption::Unrecognized(RawDhcpOption {
-        code: 57,
-        data: msz_bytes,
-    });
 
     let msg = Packet {
         reply: false,
@@ -648,8 +628,6 @@ pub fn request_host(
     let mut buf = [0u8; 1500];
     let encoded = msg.encode(&mut buf);
     send_socket.send_to(encoded, std_addr)?;
-    // socket.set_read_timeout(Some(Duration::from_millis(3000)))?;
-    // socket.set_write_timeout(Some(Duration::from_millis(3000)))?;
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
     // let mut res_buf = [0u8; 4096];
@@ -673,17 +651,9 @@ pub fn request_host(
                     }
                     None => {
                         println!("Conversion Error");
-                        // break;
                         continue;
                     }
                 };
-                // let packet = match Packet::from(raw_data) {
-                //     Ok(p) => p,
-                //     Err(_) => {
-                //         println!("Conversion Error");
-                //         continue;
-                //     }
-                // };
                 if packet.xid != msg.xid {
                     continue;
                 }
