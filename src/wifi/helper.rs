@@ -23,9 +23,11 @@ use neli::{
     types::{Buffer, GenlBuffer},
     utils::Groups,
 };
-use socket2::SockAddr;
-use std::fs;
+use socket2::{Domain, SockAddr, SockAddrStorage, Socket, Type};
+use std::fs::{self, File};
+use std::io::Read;
 use std::net::Ipv4Addr;
+use std::os::fd::AsRawFd;
 use std::{error::Error, io::Cursor, path::Path};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
@@ -265,7 +267,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 
                                 _ => {}
                             }
-                            println!("results: {:#?}", target);
+                            // println!("results: {:#?}", target);
                         }
                         result.push(target);
                         // add target to result
@@ -658,21 +660,16 @@ pub fn get_gateway_ip() -> Option<Ipv4Addr> {
 }
 
 pub fn create_packet_sockaddr(ifindex: u32) -> SockAddr {
-    let mut ll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
-    ll.sll_family = libc::AF_PACKET as u16;
-    ll.sll_ifindex = ifindex as i32;
-    ll.sll_protocol = (libc::ETH_P_IP as u16).to_be();
-    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            &ll as *const libc::sockaddr_ll as *const u8,
-            &mut storage as *mut libc::sockaddr_storage as *mut u8,
-            std::mem::size_of::<libc::sockaddr_ll>(),
-        );
+        let mut ll: libc::sockaddr_ll = std::mem::zeroed();
+        ll.sll_family = libc::AF_PACKET as u16;
+        ll.sll_ifindex = ifindex as i32;
+        ll.sll_protocol = (libc::ETH_P_ALL as u16).to_be();
+        let ptr = &ll as *const libc::sockaddr_ll as *const socket2::SockAddrStorage;
+        let storage = std::ptr::read(ptr);
 
-        SockAddr::new(
-            std::mem::transmute::<libc::sockaddr_storage, socket2::SockAddrStorage>(storage),
+        socket2::SockAddr::new(
+            storage,
             std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t,
         )
     }
@@ -766,6 +763,9 @@ pub fn set_default_route(ifindex: u32, gateway: Ipv4Addr) -> Result<(), Box<dyn 
         .rtm_scope(RtScope::Universe)
         .rtattrs(rtbuf)
         .rtm_type(Rtn::Unicast)
+        .rtm_dst_len(0)
+        .rtm_src_len(0)
+        .rtm_tos(0)
         .build()?;
     let nlmsg = NlmsghdrBuilder::default()
         .nl_type(Rtm::Newroute)
@@ -776,5 +776,35 @@ pub fn set_default_route(ifindex: u32, gateway: Ipv4Addr) -> Result<(), Box<dyn 
     let mut buf = Cursor::new(Vec::<u8>::new());
     nlmsg.to_bytes(&mut buf)?;
     sock.send(buf.get_ref(), Msg::empty())?;
+    Ok(())
+}
+
+pub fn get_iface_mac(ifname: &str) -> Result<[u8; 6], Box<dyn Error>> {
+    let path = format!("/sys/class/net/{}/address", ifname);
+    let mut mac = String::new();
+    File::open(path)?.read_to_string(&mut mac)?;
+    Ok(mac_to_bytes(&mac))
+}
+
+pub fn set_iface_up(ifindex: i32) -> Result<(), Box<dyn Error>> {
+    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+
+    let ifinfo = IfinfomsgBuilder::default()
+        .ifi_family(RtAddrFamily::Unspecified)
+        .ifi_index(ifindex)
+        .ifi_change(Iff::UP | Iff::RUNNING)
+        .ifi_flags(Iff::UP | Iff::RUNNING)
+        .ifi_type(Arphrd::Ether)
+        .build()?;
+
+    let nlmsg = NlmsghdrBuilder::default()
+        .nl_type(Rtm::Setlink)
+        .nl_flags(NlmF::REQUEST | NlmF::ACK)
+        .nl_payload(NlPayload::Payload(ifinfo))
+        .build()?;
+
+    let mut buf = Cursor::new(vec![]);
+    nlmsg.to_bytes(&mut buf)?;
+    socket.send(buf.get_ref(), Msg::empty())?;
     Ok(())
 }

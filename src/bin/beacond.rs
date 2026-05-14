@@ -1,5 +1,13 @@
-use beacon::{Command, Response, executer::execute};
-use std::{error::Error, fs};
+use beacon::{
+    Command, Response, backend::functions::list_interfaces, executer::execute, mac_to_bytes,
+    types::InterfaceType, wifi::wpa_supplicant::connect_via_ethernet,
+};
+use std::{
+    error::Error,
+    fs,
+    thread::{self, sleep},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
@@ -15,6 +23,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = UnixListener::bind(SOCKET_PATH)?;
     println!("Daemon listening on {}", SOCKET_PATH);
 
+    let mut connected_via_ether = false;
+    thread::spawn(move || {
+        loop {
+            let ifaces = list_interfaces().unwrap();
+            if !connected_via_ether
+                // && let Ok(ifaces) = list_interfaces()
+                && let Some(iface) = ifaces
+                    .iter()
+                    .find(|iface| iface.iftype == InterfaceType::Wired)
+                && let Some(ifindex) = iface.ifindex
+                && let Some(ifname) = iface.ifname.clone()
+                && let Some(mac) = iface.mac.clone()
+                && connect_via_ethernet(ifindex, &ifname, mac_to_bytes(&mac)).is_ok()
+            {
+                println!("Connected via Ethernet");
+                connected_via_ether = true;
+            } else if connected_via_ether
+                // && let Ok(ifaces) = list_interfaces()
+                && let None = ifaces.iter().find(|f| f.iftype == InterfaceType::Wired)
+            {
+                connected_via_ether = false;
+                println!("Disconnected Ethernet");
+                thread::sleep(Duration::from_millis(800));
+            }
+        }
+    });
     loop {
         let (mut socket, _) = listener.accept().await?;
 

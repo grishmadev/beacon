@@ -17,6 +17,7 @@ bincode = "1.0"                                       # For fast, small binary (
 neli = { path = "/home/grishma/Build/neli/" }
 ratatui = "0.30.0"
 chrono = { version = "0.4.44", features = ["serde"] }
+etherparse = "0.20.1"
 
 
 [[bin]]

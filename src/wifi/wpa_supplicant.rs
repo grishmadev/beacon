@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use dhcp4r::options::{DhcpOption, MessageType, RawDhcpOption};
 use dhcp4r::packet::Packet;
+use etherparse::PacketBuilder;
 use neli::attr::Attribute;
 use neli::consts::nl::NlmF;
 use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
@@ -32,8 +33,8 @@ use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::helper::{
-    add_addr, create_packet_sockaddr, generate_client_id, get_interfaces, set_default_route,
-    setup_iface, validate_packet, validate_packet_v2,
+    add_addr, create_packet_sockaddr, generate_client_id, get_iface_mac, get_interfaces,
+    set_default_route, set_iface_up, setup_iface, validate_packet, validate_packet_v2,
 };
 
 pub async fn connect(
@@ -433,25 +434,26 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
 pub fn discover_host(
     ifindex: &u32,
     ifname: &str,
+    // client mac
     mac_address: [u8; 6],
 ) -> Result<DhcpLease, Box<dyn Error>> {
     // point it at global broadcast address
     // socket used only for sending signals
-    let broadcast_addr: SocketAddr = "255.255.255.255:67".parse().unwrap();
+    // let broadcast_addr: SockAddr =
+    //     SockAddr::from(SocketAddrV4::new(Ipv4Addr::new(255, 255, 255, 255), 68));
     let total_retries = 5;
     let xid = rand::random();
-    let send_socket = UdpSocket::bind("0.0.0.0:68")?;
-    send_socket.set_broadcast(true)?;
-    bind_socket_to_device(&send_socket, ifname)?;
 
     let socket = socket2::Socket::new(
         Domain::PACKET,
         Type::RAW,
-        Some(Protocol::from(libc::ETH_P_IP)),
+        Some(Protocol::from((libc::ETH_P_ALL as u16).to_be() as i32)),
     )?;
-    let sockaddr = create_packet_sockaddr(*ifindex);
-    socket.bind(&sockaddr)?;
+    // let sockaddr = create_packet_sockaddr(*ifindex);
+    socket.bind_device(Some(ifname.as_bytes()))?;
+    // println!("sub 1");
 
+    set_iface_up(*ifindex as i32)?;
     for _ in 0..total_retries {
         let msg = Packet {
             reply: false,
@@ -465,7 +467,7 @@ pub fn discover_host(
             giaddr: Ipv4Addr::UNSPECIFIED,
             chaddr: mac_address,
             options: vec![
-                DhcpOption::DhcpMessageType(dhcp4r::options::MessageType::Discover),
+                DhcpOption::DhcpMessageType(MessageType::Discover),
                 DhcpOption::ParameterRequestList(vec![2, 3, 6, 15, 51]), // Subnet, Router, DNS, Domain
             ],
         };
@@ -473,8 +475,16 @@ pub fn discover_host(
         let mut buf = [0u8; 1500];
         let slice = msg.encode(&mut buf);
 
+        let ethheader = PacketBuilder::ethernet2(mac_address, [255, 255, 255, 255, 255, 255])
+            .ipv4([0, 0, 0, 0], [255, 255, 255, 255], 64)
+            .udp(68, 67);
+        let mut full_packet = Vec::<u8>::with_capacity(ethheader.size(slice.len()));
+        ethheader.write(&mut full_packet, slice)?;
+
+        let sockaddr = create_packet_sockaddr(*ifindex);
         // sending the socket
-        send_socket.send_to(slice, broadcast_addr)?;
+        socket.send_to(&full_packet, &sockaddr)?;
+        println!("Sub 2");
 
         socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
@@ -489,30 +499,39 @@ pub fn discover_host(
         loop {
             let now = Instant::now();
             if now >= timeout {
+                println!("Timeout");
                 break;
             }
             match socket.recv_from(&mut res_buf) {
                 Ok((size, _)) => {
+                    println!("Recieved.");
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
-                    let packet =
-                        validate_packet_v2(initialized_data, size)?.expect("No Packet Found.");
+                    let packet = match validate_packet_v2(initialized_data, size)? {
+                        Some(s) => s,
+                        None => {
+                            println!("No Packet Found.");
+                            continue;
+                        }
+                    };
 
                     if packet.xid != msg.xid {
+                        println!("Packet didnt match {}, {}", packet.xid, msg.xid);
                         continue;
                     }
 
                     for option in packet.options {
                         // checking if offer answered
+                        println!("Option data: {:?}", option);
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
-                                    let _ = cwrite(format!("Offered IP: {:?}", packet.yiaddr));
+                                    println!("Offered IP: {:?}", packet.yiaddr);
                                     ip_addr = Some(packet.yiaddr);
                                 }
                                 _ => {
-                                    let _ = cwrite("Didnt find desired message.".into());
+                                    println!("Didnt find desired message.");
                                 }
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
@@ -528,7 +547,8 @@ pub fn discover_host(
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // no packets keep waiting.
-                    // cwrite("Getting WouldBlock Errors");
+                    println!("Getting WouldBlock Errors");
+                    std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 Err(e) => {
@@ -536,7 +556,7 @@ pub fn discover_host(
                     return Err(e.into());
                 }
             }
-            let result: DhcpLease = DhcpLease {
+            let result = DhcpLease {
                 ip_addr,
                 subnet_mask,
                 dns_servers: dns_servers.unwrap_or(vec![]),
@@ -633,7 +653,6 @@ pub fn request_host(
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
     // let mut res_buf = [0u8; 4096];
-    println!("Checkpoint 0");
 
     loop {
         let start = Instant::now();
@@ -643,11 +662,9 @@ pub fn request_host(
         }
         match socket.recv(&mut res_buf) {
             Ok(size) => {
-                println!("Checkpoint 1");
                 let raw_data =
                     unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
-                println!("raw_data: {:?}", raw_data);
-                // let raw_data = &res_buf[..size];
+                println!("Raw data: {:?}", raw_data);
                 let packet = match validate_packet_v2(raw_data, size)? {
                     Some(s) => {
                         println!("Packet successful");
@@ -655,10 +672,18 @@ pub fn request_host(
                         s
                     }
                     None => {
-                        print!("Conversion Error");
-                        break;
+                        println!("Conversion Error");
+                        // break;
+                        continue;
                     }
                 };
+                // let packet = match Packet::from(raw_data) {
+                //     Ok(p) => p,
+                //     Err(_) => {
+                //         println!("Conversion Error");
+                //         continue;
+                //     }
+                // };
                 if packet.xid != msg.xid {
                     continue;
                 }
@@ -666,7 +691,6 @@ pub fn request_host(
                     "packet recieved: {:#?}, packet expected: {:#?}",
                     packet.xid, msg.xid
                 );
-                println!("Checkpoint 2");
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
@@ -710,11 +734,18 @@ pub fn request_host(
     Err("Failed after retry.".into())
 }
 
-pub fn connect_via_ethernet(ifindex: u32, ifname: &str) -> Result<(), Box<dyn Error>> {
+pub fn connect_via_ethernet(
+    ifindex: u32,
+    ifname: &str,
+    mac: [u8; 6],
+) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
     setup_iface(ifindex)?;
+    println!("CHeckpoint 1");
 
-    let data = discover_host(&ifindex, ifname, [0, 0, 0, 0, 0, 0])?;
+    let data = discover_host(&ifindex, ifname, mac)?;
+    println!("CHeckpoint 2");
+
     if let Some(offer) = data.offer
         && let Some(server_id) = data.gateway
         && let Some(current_ip) = data.ip_addr
@@ -733,8 +764,11 @@ pub fn connect_via_ethernet(ifindex: u32, ifname: &str) -> Result<(), Box<dyn Er
             ..Default::default()
         })?;
         add_addr(ifindex, current_ip)?;
+        println!("Sub sub 1");
         set_default_route(ifindex, server_id)?;
+        println!("Sub sub 2");
         set_dns(edata.dns_servers)?;
+        println!("Sub sub 3");
         Ok(())
     } else {
         Err("Fields missing! [wpa_supplicant]".into())

@@ -49,5 +49,6 @@ async fn main() {
     //         // break;
     //     } // };
     // }
-    connect_via_ethernet(ifindex, &ifname);
+    let res = connect_via_ethernet(ifindex, &ifname, mac);
+    println!("Ethernet: {:#?}", res);
 }

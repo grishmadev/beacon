@@ -21,7 +21,7 @@ use crate::{
         list_all_signals,
     },
     debug::write,
-    types::DhcpLease,
+    types::{DhcpLease, Host},
     wifi::{
         dhcp_connection::{DhcpFile, DhcpStorage},
         helper::{get_family_info, get_interfaces, renew_connection},
@@ -30,20 +30,6 @@ use crate::{
 };
 
 const RETRIES: u32 = 5;
-
-struct TimeTracker {
-    stop_signal: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-impl TimeTracker {
-    fn stop(&mut self) {
-        self.stop_signal.store(false, Ordering::Relaxed);
-
-        if let Some(h) = self.thread.take() {
-            h.join().expect("Thread Panicked.");
-        }
-    }
-}
 
 pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let family_info = get_family_info()?;
