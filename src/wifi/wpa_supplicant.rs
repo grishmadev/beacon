@@ -764,11 +764,8 @@ pub fn connect_via_ethernet(
             ..Default::default()
         })?;
         add_addr(ifindex, current_ip)?;
-        println!("Sub sub 1");
         set_default_route(ifindex, server_id)?;
-        println!("Sub sub 2");
         set_dns(edata.dns_servers)?;
-        println!("Sub sub 3");
         Ok(())
     } else {
         Err("Fields missing! [wpa_supplicant]".into())

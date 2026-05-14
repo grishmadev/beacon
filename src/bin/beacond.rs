@@ -5,6 +5,10 @@ use beacon::{
 use std::{
     error::Error,
     fs,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, sleep},
     time::Duration,
 };
@@ -23,30 +27,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = UnixListener::bind(SOCKET_PATH)?;
     println!("Daemon listening on {}", SOCKET_PATH);
 
-    let mut connected_via_ether = false;
+    let connected_via_ether = Arc::new(AtomicBool::new(false));
+    let status_clone = Arc::clone(&connected_via_ether);
     thread::spawn(move || {
         loop {
-            let ifaces = list_interfaces().unwrap();
-            if !connected_via_ether
-                // && let Ok(ifaces) = list_interfaces()
-                && let Some(iface) = ifaces
-                    .iter()
-                    .find(|iface| iface.iftype == InterfaceType::Wired)
-                && let Some(ifindex) = iface.ifindex
-                && let Some(ifname) = iface.ifname.clone()
-                && let Some(mac) = iface.mac.clone()
-                && connect_via_ethernet(ifindex, &ifname, mac_to_bytes(&mac)).is_ok()
-            {
-                println!("Connected via Ethernet");
-                connected_via_ether = true;
-            } else if connected_via_ether
-                // && let Ok(ifaces) = list_interfaces()
-                && let None = ifaces.iter().find(|f| f.iftype == InterfaceType::Wired)
-            {
-                connected_via_ether = false;
-                println!("Disconnected Ethernet");
-                thread::sleep(Duration::from_millis(800));
+            let is_connected = status_clone.load(Ordering::SeqCst);
+            let ifaces = list_interfaces().unwrap_or_default();
+
+            let eth = ifaces
+                .iter()
+                .find(|iface| iface.iftype == InterfaceType::Wired);
+
+            match (is_connected, eth) {
+                (false, Some(f)) => {
+                    if let (Some(ifindex), Some(ifname), Some(mac)) =
+                        (f.ifindex, f.ifname.clone(), f.mac.clone())
+                        && connect_via_ethernet(ifindex, &ifname, mac_to_bytes(&mac)).is_ok()
+                    {
+                        println!("Connected via Ethernet");
+                        status_clone.store(true, Ordering::SeqCst);
+                    }
+                }
+                (true, None) => {
+                    println!("Disconnected Ethernet");
+                    status_clone.store(false, Ordering::SeqCst);
+                }
+                _ => {}
             }
+            thread::sleep(Duration::from_secs(2));
         }
     });
     loop {
