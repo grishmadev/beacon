@@ -48,6 +48,7 @@ impl DhcpStorage {
     pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
         let mut file = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(DHCPINFO_PATH)?;
         if !Path::new(DHCPINFO_PATH).exists() {

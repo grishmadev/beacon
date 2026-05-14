@@ -99,8 +99,8 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
             Command::Tick => Response::Tick,
             _ => Response::Error("Unknown Command.".into()),
         };
-        if let Response::Error(_) = response {
-            println!("Command not Implemented.");
+        if let Response::Error(e) = response.clone() {
+            println!("Command not Implemented. {}", e);
             continue;
         } else {
             break;

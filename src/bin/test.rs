@@ -5,7 +5,7 @@ use beacon::{
     mac_to_bytes,
     wifi::{
         helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
-        wpa_supplicant::request_host,
+        wpa_supplicant::{connect_via_ethernet, request_host},
     },
 };
 use chrono::{TimeZone, Utc};
@@ -21,10 +21,11 @@ async fn main() {
                 .ifname
                 .as_ref()
                 .unwrap_or(&"---".to_string())
-                .starts_with("wl")
+                .starts_with("en")
         })
         .unwrap();
     let ifindex = interface.ifindex.unwrap();
+    let ifname = interface.ifname.clone().unwrap();
     let family_info = get_family_info().unwrap();
     // let cmd = Command::ListActiveConnections(interface.clone());
     // let response = execute(&cmd).await.unwrap();
@@ -35,7 +36,7 @@ async fn main() {
     println!("current_ip: {:#?}", current_ip);
 
     let hosts = list_active_signals(&family_info, interface.clone());
-    println!("hosts: {:#?}", hosts);
+    // println!("hosts: {:#?}", hosts);
     // loop {
     // match request_host(mac, current_ip, get_gateway_ip().unwrap(), true) {
     //     Ok(s) => {
@@ -48,4 +49,5 @@ async fn main() {
     //         // break;
     //     } // };
     // }
+    connect_via_ethernet(ifindex, &ifname);
 }

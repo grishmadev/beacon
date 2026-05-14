@@ -1,10 +1,12 @@
 use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
+use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::wpa_supplicant::{find_active_interface, request_host};
 use dhcp4r::packet::Packet;
-use neli::consts::rtnl::Ifa;
-use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder};
+use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, Rtn, Rtprot};
+use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Rtattr, RtattrBuilder, RtmsgBuilder};
 use neli::socket::synchronous::NlSocketHandle;
+use neli::types::RtBuffer;
 use neli::{
     FromBytes, ToBytes,
     attr::Attribute,
@@ -263,12 +265,10 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 
                                 _ => {}
                             }
+                            println!("results: {:#?}", target);
                         }
-                        // else {
-                        //     break;
-                        // }
-                        // add target to result
                         result.push(target);
+                        // add target to result
                     }
                     // println!("host: {:#?}", target);
                 }
@@ -431,17 +431,18 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     None => return Ok(None),
                 };
             }
-            let gateway = get_gateway_ip().unwrap();
-            if let Some(mac) = connection.mac.clone()
+            if let Some(gateway) = get_gateway_ip()
                 && let Ok(Some(ip)) = get_current_ip()
+                && let Ok(Some(edata)) = DhcpStorage::read_file()
             {
-                let extra_data = request_host(mac_to_bytes(&mac), ip, gateway, true)?;
-                connection.ip_addr = extra_data.ip_addr;
-                connection.subnet_mask = extra_data.subnet_mask;
-                connection.gateway = extra_data.gateway;
-                connection.dns_servers = extra_data.dns_servers;
-                connection.server_id = extra_data.server_id;
-                connection.lease_duration = extra_data.lease_duration;
+                // let extra_data = request_host(mac_to_bytes(&mac), ip, gateway, true)?;
+
+                connection.ip_addr = Some(ip);
+                connection.subnet_mask = edata.subnet_mask;
+                connection.gateway = Some(gateway);
+                connection.dns_servers = edata.dns_servers;
+                connection.server_id = edata.server_id;
+                connection.lease_duration = edata.lease_duration;
             }
             return Ok(Some(connection));
         }
@@ -686,4 +687,94 @@ pub fn generate_client_id(mac: [u8; 6]) -> Vec<u8> {
     // The MAC address
     id.extend_from_slice(&mac);
     id
+}
+
+pub fn setup_iface(ifindex: u32) -> Result<(), Box<dyn Error>> {
+    let sock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+    let ifmsg = IfinfomsgBuilder::default()
+        .ifi_family(RtAddrFamily::Unspecified)
+        .ifi_type(Arphrd::Ether)
+        .ifi_index(ifindex as i32)
+        .ifi_change(Iff::UP)
+        .ifi_flags(Iff::empty())
+        .build()?;
+
+    let nl_msghdr = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::REQUEST | NlmF::ACK)
+        .nl_type(Rtm::Setlink)
+        .nl_payload(NlPayload::Payload(ifmsg))
+        .build()?;
+
+    let mut buf = Cursor::new(Vec::<u8>::new());
+    nl_msghdr.to_bytes(&mut buf)?;
+    sock.send(buf.get_ref(), Msg::empty())?;
+    Ok(())
+}
+
+pub fn add_addr(ifindex: u32, ip: Ipv4Addr) -> Result<(), Box<dyn Error>> {
+    let sock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+
+    let mut rt_buf = RtBuffer::new();
+    rt_buf.push(
+        RtattrBuilder::default()
+            .rta_type(Ifa::Local)
+            .rta_payload(ip.octets().to_vec())
+            .build()?,
+    );
+    let ifmsg = IfaddrmsgBuilder::default()
+        .ifa_family(RtAddrFamily::Inet)
+        .ifa_prefixlen(24)
+        .ifa_scope(RtScope::Universe)
+        .ifa_flags(IfaF::empty())
+        .rtattrs(rt_buf)
+        .ifa_index(ifindex)
+        .build()?;
+
+    let nlmsg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::REQUEST | NlmF::CREATE | NlmF::ACK)
+        .nl_payload(NlPayload::Payload(ifmsg))
+        .nl_type(Rtm::Newaddr)
+        .build()?;
+
+    let mut buf = Cursor::new(Vec::<u8>::new());
+    nlmsg.to_bytes(&mut buf)?;
+    sock.send(buf.get_ref(), Msg::empty())?;
+    Ok(())
+}
+
+pub fn set_default_route(ifindex: u32, gateway: Ipv4Addr) -> Result<(), Box<dyn Error>> {
+    let sock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+
+    let mut rtbuf = RtBuffer::new();
+    rtbuf.push(
+        RtattrBuilder::default()
+            .rta_type(Rta::Oif)
+            .rta_payload(ifindex.to_ne_bytes().to_vec())
+            .build()?,
+    );
+    rtbuf.push(
+        RtattrBuilder::default()
+            .rta_type(Rta::Gateway)
+            .rta_payload(gateway.octets().to_vec())
+            .build()?,
+    );
+
+    let rtmsg = RtmsgBuilder::default()
+        .rtm_family(RtAddrFamily::Inet)
+        .rtm_table(RtTable::Main)
+        .rtm_protocol(Rtprot::Boot)
+        .rtm_scope(RtScope::Universe)
+        .rtattrs(rtbuf)
+        .rtm_type(Rtn::Unicast)
+        .build()?;
+    let nlmsg = NlmsghdrBuilder::default()
+        .nl_type(Rtm::Newroute)
+        .nl_flags(NlmF::REQUEST | NlmF::CREATE | NlmF::ACK)
+        .nl_payload(NlPayload::Payload(rtmsg))
+        .build()?;
+
+    let mut buf = Cursor::new(Vec::<u8>::new());
+    nlmsg.to_bytes(&mut buf)?;
+    sock.send(buf.get_ref(), Msg::empty())?;
+    Ok(())
 }

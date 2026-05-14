@@ -8,12 +8,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::raw;
 use std::os::unix::net::UnixDatagram;
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dhcp4r::options::{DhcpOption, MessageType, RawDhcpOption};
 use dhcp4r::packet::Packet;
-use libc::sleep;
 use neli::attr::Attribute;
 use neli::consts::nl::NlmF;
 use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
@@ -23,15 +23,17 @@ use neli::rtnl::{Rtmsg, RtmsgBuilder};
 use neli::socket::NlSocket;
 use neli::types::RtBuffer;
 use neli::utils::Groups;
-use neli::{FromBytes, ToBytes, router};
+use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, sa_family_t};
 
 use crate::backend::functions::list_interfaces;
 use crate::debug::write as cwrite;
 use crate::types::{DhcpLease, Interface};
+use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::helper::{
-    create_packet_sockaddr, generate_client_id, get_interfaces, validate_packet, validate_packet_v2,
+    add_addr, create_packet_sockaddr, generate_client_id, get_interfaces, set_default_route,
+    setup_iface, validate_packet, validate_packet_v2,
 };
 
 pub async fn connect(
@@ -634,7 +636,6 @@ pub fn request_host(
     println!("Checkpoint 0");
 
     loop {
-        thread::sleep(Duration::from_millis(300));
         let start = Instant::now();
         if start >= timeout {
             println!("Timeout");
@@ -707,4 +708,35 @@ pub fn request_host(
         }
     }
     Err("Failed after retry.".into())
+}
+
+pub fn connect_via_ethernet(ifindex: u32, ifname: &str) -> Result<(), Box<dyn Error>> {
+    // setting up USB ethernet
+    setup_iface(ifindex)?;
+
+    let data = discover_host(&ifindex, ifname, [0, 0, 0, 0, 0, 0])?;
+    if let Some(offer) = data.offer
+        && let Some(server_id) = data.gateway
+        && let Some(current_ip) = data.ip_addr
+    {
+        let mac_address = offer.chaddr;
+
+        let edata = request_host(mac_address, current_ip, server_id, false)?;
+        println!("Ethernet: {:#?}", edata);
+        DhcpStorage::write_file(&mut DhcpFile {
+            ip_addr: edata.ip_addr,
+            gateway: data.gateway,
+            subnet_mask: data.subnet_mask,
+            dns_servers: data.dns_servers,
+            server_id: data.server_id,
+            lease_duration: data.lease_duration,
+            ..Default::default()
+        })?;
+        add_addr(ifindex, current_ip)?;
+        set_default_route(ifindex, server_id)?;
+        set_dns(edata.dns_servers)?;
+        Ok(())
+    } else {
+        Err("Fields missing! [wpa_supplicant]".into())
+    }
 }

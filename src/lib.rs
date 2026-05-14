@@ -48,7 +48,7 @@ pub enum Command {
     Info(String), // bssid,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Response {
     Ok,
     Pong,
