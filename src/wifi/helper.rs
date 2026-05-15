@@ -1,7 +1,9 @@
 use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
 use crate::wifi::dhcp_connection::DhcpStorage;
-use crate::wifi::wpa_supplicant::{find_active_interface, request_host};
+use crate::wifi::wpa_supplicant::{
+    find_active_interface, request_host_wired, request_host_wireless,
+};
 use dhcp4r::packet::Packet;
 use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, Rtn, Rtprot};
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Rtattr, RtattrBuilder, RtmsgBuilder};
@@ -568,7 +570,7 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
     Ok(())
 }
 
-pub fn renew_connection(broadcast: bool) -> Result<Option<DhcpLease>, Box<dyn Error>> {
+pub fn renew_connection(broadcast: bool, wired: bool) -> Result<Option<DhcpLease>, Box<dyn Error>> {
     let family_info = get_family_info()?;
     let family_id = family_info.id;
     let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
@@ -576,12 +578,17 @@ pub fn renew_connection(broadcast: bool) -> Result<Option<DhcpLease>, Box<dyn Er
     // IP for this client (This Device)
     let current_ip = current.ip_addr.expect("No IP Address found.");
     let mac = current.mac.expect("No MAC Address found.");
+    let ifname = current.ifname.expect("No Ifname found.");
     let mac_address = mac_to_bytes(&mac);
 
     // IP of the server
     let server_id = current.server_id.expect("NO Server ID found.");
 
-    let data = request_host(mac_address, current_ip, server_id, broadcast)?;
+    let data = if wired {
+        request_host_wired(mac_address, current_ip, server_id, broadcast)?
+    } else {
+        request_host_wireless(mac_address, current_ip, None, &ifname)?
+    };
     Ok(Some(data))
 }
 

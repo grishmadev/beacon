@@ -160,13 +160,13 @@ pub async fn connect(
     }
     // Discover packet sent here
     let host_data = discover_host(ifindex, ifname, mac_address)?;
-    cwrite(format!("host data: {:#?}", host_data));
+    // cwrite(format!("host data: {:#?}", host_data));
 
     if let Some(offer) = &host_data.offer {
         // Request packet sent here
         let mac = offer.chaddr;
-        if let Some(ip_addr) = host_data.ip_addr {
-            let mut data = request_host(mac, ip_addr, host_data.ip_addr.unwrap(), true)?;
+        if let (Some(ip_addr), Some(offer)) = (host_data.ip_addr, host_data.offer) {
+            let mut data = request_host_wireless(mac, ip_addr, host_data.server_id, ifname)?;
             DhcpStorage::write_from_dhcplease(&mut data)?;
         } else {
             return Err("Failed to get ip address from dhcp server.".into());
@@ -333,45 +333,48 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn send_dhcp_request(
-    offer: &Packet,
-    offered_ip: Ipv4Addr,
+pub fn request_host_wireless(
+    mac: [u8; 6],
+    current_ip: Ipv4Addr,
+    server_id: Option<Ipv4Addr>,
     ifname: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<DhcpLease, Box<dyn Error>> {
     let mut options = Vec::new();
 
     // message type requesst
     options.push(DhcpOption::DhcpMessageType(MessageType::Request));
-    cwrite(format!("offered ip address: {:?}", offer.yiaddr));
+    // cwrite(format!("offered ip address: {:?}", offer.yiaddr));
 
     // requested ip address (optins 50)
-    options.push(DhcpOption::RequestedIpAddress(offered_ip));
+    options.push(DhcpOption::RequestedIpAddress(current_ip));
 
     // options 54
-    if let Some(server_id) = offer.options.iter().find_map(|o| {
-        if let DhcpOption::ServerIdentifier(id) = o {
-            Some(*id)
-        } else {
-            None
-        }
-    }) {
+    // if let Some(server_id) = offer.options.iter().find_map(|o| {
+    //     if let DhcpOption::ServerIdentifier(id) = o {
+    //         Some(*current_ip)
+    //     } else {
+    //         None
+    //     }
+    // })
+    if let Some(server_id) = server_id {
         options.push(DhcpOption::ServerIdentifier(server_id));
     }
 
     // ask for same things as before
     options.push(DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]));
 
+    let xid = rand::random();
     let request_packet = Packet {
         reply: false,
         hops: 0,
-        xid: offer.xid,
+        xid,
+        ciaddr: current_ip,
+        chaddr: mac,
         secs: 0,
         broadcast: true,
-        ciaddr: Ipv4Addr::UNSPECIFIED,
         yiaddr: Ipv4Addr::UNSPECIFIED,
         siaddr: Ipv4Addr::UNSPECIFIED,
         giaddr: Ipv4Addr::UNSPECIFIED,
-        chaddr: offer.chaddr,
         options,
     };
 
@@ -401,7 +404,77 @@ fn send_dhcp_request(
         }),
     );
 
-    Ok(())
+    let timeout = Instant::now();
+    let mut buf = [0u8; 4096];
+    let mut result = DhcpLease::default();
+    loop {
+        if timeout.elapsed() >= Duration::from_secs(5) {
+            println!("Timeout");
+            break;
+        }
+        match socket.recv(&mut buf) {
+            Ok(size) => {
+                let raw_data = &buf[..size];
+                println!("Raw data: {:?}", raw_data);
+                let packet = match validate_packet_v2(raw_data, size)? {
+                    Some(s) => {
+                        println!("Packet successful");
+                        println!("recieved options: {:#?}", s.options);
+                        s
+                    }
+                    None => {
+                        println!("Conversion Error");
+                        continue;
+                    }
+                };
+                if packet.xid != request_packet.xid {
+                    continue;
+                }
+                println!(
+                    "packet recieved: {:#?}, packet expected: {:#?}",
+                    packet.xid, request_packet.xid
+                );
+                for option in packet.options {
+                    match option {
+                        DhcpOption::DhcpMessageType(val) => match val {
+                            MessageType::Ack => {
+                                println!("Server acknwoledgeeed");
+                                result.ip_addr = if packet.yiaddr.is_unspecified() {
+                                    Some(current_ip)
+                                } else {
+                                    Some(packet.yiaddr)
+                                };
+                            }
+                            MessageType::Nak => {
+                                println!("Server Refused");
+                                let _ = cwrite("Server Refused to acknwoledge.".to_string());
+                            }
+                            _ => {}
+                        },
+                        DhcpOption::DomainNameServer(ips) => result.dns_servers = ips,
+                        DhcpOption::Router(routers) if !routers.is_empty() => {
+                            result.gateway = Some(routers[0]);
+                        }
+                        DhcpOption::SubnetMask(subnet) => result.subnet_mask = Some(subnet),
+                        DhcpOption::ServerIdentifier(id) => result.server_id = Some(id),
+                        DhcpOption::IpAddressLeaseTime(secs) => result.lease_duration = secs,
+                        _ => {}
+                    }
+                }
+                result.offer = Some(request_packet);
+                return Ok(result);
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!("WouldBlock Error");
+                continue;
+            }
+            Err(e) => {
+                print!("Error, {}", e);
+                return Err(e.into());
+            }
+        }
+    }
+    Err("Exited".into())
 }
 
 fn find_saved_networks(
@@ -573,7 +646,7 @@ pub fn discover_host(
     Err("Failed after retry.".into())
 }
 
-pub fn request_host(
+pub fn request_host_wired(
     mac_address: [u8; 6],
     current_ip: Ipv4Addr,
     server_id: Ipv4Addr,
@@ -635,7 +708,7 @@ pub fn request_host(
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
 
     loop {
-        println!("In loop");
+        println!("In loop:");
         if timeout.elapsed() >= Duration::from_secs(5) {
             println!("Timeout");
             break;
@@ -724,7 +797,7 @@ pub fn connect_via_ethernet(
     {
         let mac_address = offer.chaddr;
 
-        let mut edata = request_host(mac_address, current_ip, server_id, false)?;
+        let mut edata = request_host_wired(mac_address, current_ip, server_id, false)?;
         println!("Ethernet: {:#?}", edata);
         DhcpStorage::write_from_dhcplease(&mut edata)?;
         add_addr(ifindex, current_ip)?;

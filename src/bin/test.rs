@@ -6,7 +6,7 @@ use beacon::{
     wifi::{
         dhcp_connection::DhcpStorage,
         helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
-        wpa_supplicant::{connect_via_ethernet, request_host},
+        wpa_supplicant::connect_via_ethernet,
     },
 };
 use chrono::{TimeZone, Utc};
@@ -33,25 +33,7 @@ async fn main() {
     let mac = mac_to_bytes(&interface.mac.clone().unwrap());
     let current_ip = get_current_ip().unwrap().unwrap();
     let server_id = get_gateway_ip();
-    // let server_ip = get
     println!("current_ip: {:#?}", current_ip);
-
-    let hosts = list_active_signals(&family_info, interface.clone());
-    // println!("hosts: {:#?}", hosts);
-    // loop {
-    // match request_host(mac, current_ip, get_gateway_ip().unwrap(), true) {
-    //     Ok(s) => {
-    //         println!("response: {:#?}", s);
-    //         // break;
-    //     }
-    //     Err(e) => {
-    //         println!("Error: {:#?}", e);
-    //         // continue;
-    //         // break;
-    //     } // };
-    // }
-    // let res = connect_via_ethernet(ifindex, &ifname, mac);
-    // println!("Ethernet: {:#?}", res);
-    let content = DhcpStorage::read_file().unwrap();
-    println!("content: {:#?}", content);
+    let res = connect_via_ethernet(ifindex, &ifname, mac);
+    println!("Ether: {:#?}", res);
 }

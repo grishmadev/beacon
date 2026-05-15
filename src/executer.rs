@@ -21,7 +21,7 @@ use crate::{
         list_all_signals,
     },
     debug::write,
-    types::{DhcpLease, Host},
+    types::{DhcpLease, Host, InterfaceType},
     wifi::{
         dhcp_connection::{DhcpFile, DhcpStorage},
         helper::{get_family_info, get_interfaces, renew_connection},
@@ -67,7 +67,11 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 password,
             } => match connect_to(&family_info, &interfaces, iface, bssid, password).await {
                 Ok(_) => {
-                    manage_lease_thread()?;
+                    if iface.iftype == InterfaceType::Wired {
+                        manage_lease_thread(true)?;
+                    } else {
+                        manage_lease_thread(false)?;
+                    }
                     Response::Connected
                 }
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
@@ -95,7 +99,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     Ok(response)
 }
 
-pub fn manage_lease_thread() -> Result<(), Box<dyn Error>> {
+pub fn manage_lease_thread(wired: bool) -> Result<(), Box<dyn Error>> {
     thread::spawn(move || {
         let mut last_read = DhcpFile::default();
         loop {
@@ -107,7 +111,7 @@ pub fn manage_lease_thread() -> Result<(), Box<dyn Error>> {
                 }
                 let time_init = content.time_initiated;
                 let ls_dur = content.lease_duration as i64;
-                manage_lease(time_init, ls_dur);
+                manage_lease(wired, time_init, ls_dur);
             } else {
                 break;
             }
@@ -117,7 +121,7 @@ pub fn manage_lease_thread() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn manage_lease(time_init: i64, ls_dur: i64) {
+fn manage_lease(wired: bool, time_init: i64, ls_dur: i64) {
     let now = Utc::now();
     let t1 = Utc.timestamp_opt((ls_dur / 2) + time_init, 0).single();
     let t2 = Utc
@@ -127,9 +131,9 @@ fn manage_lease(time_init: i64, ls_dur: i64) {
         && let Some(t2) = t2
     {
         let data = if now > t2 {
-            renew_connection(true)
+            renew_connection(true, wired)
         } else if now > t1 {
-            renew_connection(false)
+            renew_connection(false, wired)
         } else {
             Err("Nothing happened.".into())
         };

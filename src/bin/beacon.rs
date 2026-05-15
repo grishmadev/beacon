@@ -125,8 +125,8 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                     let _ = cmdsx.send(Command::ListInterfaces);
                     if let Some(iface) = active_iface.clone() {
                         let _ = cmdsx.send(Command::ListActiveConnections(iface));
-                        let _ = cmdsx.send(Command::CurrentConnection);
                     };
+                    let _ = cmdsx.send(Command::CurrentConnection);
                 }
                 Response::Connected => {
                     let _ = cmdsx.send(Command::Notification("Connected.".into()));

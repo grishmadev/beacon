@@ -72,7 +72,7 @@ impl DhcpStorage {
         Ok(())
     }
 
-    pub fn empty_out(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn empty_out() -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
         if path.exists() {
             fs::remove_file(path)?;
