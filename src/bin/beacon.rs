@@ -48,7 +48,7 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         while let Ok(cmd) = cmdrx.recv() {
             match cmd {
                 Command::Notification(msg) => {
-                    let cmdsx_clone = cmdsx_clone.clone();
+                    // let cmdsx_clone = cmdsx_clone.clone();
                     let ressx_clone = ressx.clone();
                     thread::spawn(move || {
                         let delay = 3;
@@ -138,24 +138,10 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         if event::poll(Duration::from_millis(10))?
             && let Event::Key(key) = event::read()?
         {
-            app.handle_keys(key);
+            app.handle_keys(key, &cmdsx);
             match key.code {
                 KeyCode::Char('q') => {
                     break;
-                }
-                KeyCode::Enter => {
-                    if app
-                        .get_hosts()
-                        .iter()
-                        .find(|host| host.is_connected)
-                        .is_some()
-                    {
-                        // disconnect if connected
-                        let _ = cmdsx.send(Command::Disconnect);
-                    } else {
-                        // connect if disconnected
-                        app.connect(&cmdsx, Some("kakakakaka".into()));
-                    }
                 }
                 _ => {}
             }

@@ -4,6 +4,7 @@ use beacon::{
     executer::execute,
     mac_to_bytes,
     wifi::{
+        dhcp_connection::DhcpStorage,
         helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
         wpa_supplicant::{connect_via_ethernet, request_host},
     },
@@ -49,6 +50,8 @@ async fn main() {
     //         // break;
     //     } // };
     // }
-    let res = connect_via_ethernet(ifindex, &ifname, mac);
-    println!("Ethernet: {:#?}", res);
+    // let res = connect_via_ethernet(ifindex, &ifname, mac);
+    // println!("Ethernet: {:#?}", res);
+    let content = DhcpStorage::read_file().unwrap();
+    println!("content: {:#?}", content);
 }

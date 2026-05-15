@@ -73,7 +73,7 @@ pub async fn connect(
             if reply.starts_with('<') {
                 continue;
             }
-            cwrite(format!("result: {}", reply));
+            println!("result: {}", reply);
             return Ok(reply);
         }
         Ok("FAIL".to_string())
@@ -164,7 +164,13 @@ pub async fn connect(
 
     if let Some(offer) = &host_data.offer {
         // Request packet sent here
-        send_dhcp_request(offer, host_data.ip_addr.unwrap(), ifname)?;
+        let mac = offer.chaddr;
+        if let Some(ip_addr) = host_data.ip_addr {
+            let mut data = request_host(mac, ip_addr, host_data.ip_addr.unwrap(), true)?;
+            DhcpStorage::write_from_dhcplease(&mut data)?;
+        } else {
+            return Err("Failed to get ip address from dhcp server.".into());
+        }
     }
 
     let (connection, handle, _) = new_connection()?;
@@ -311,16 +317,13 @@ async fn apply_network_config(
 }
 
 fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
-    if dns_servers.is_empty() {
-        return Ok(());
-    }
     let mut config_lines = Vec::<String>::new();
     for dns in dns_servers {
         config_lines.push(format!("nameserver {}", dns));
     }
+    // fallback DNS's
     config_lines.push("nameserver 8.8.8.8".to_string());
     config_lines.push("nameserver 1.1.1.1".to_string());
-    cwrite(format!("dns: {}", config_lines.join("\n")));
     match write("/etc/resolv.conf", config_lines.join("\n")) {
         Ok(_) => cwrite("DNS set!".into()),
         Err(e) => {
@@ -451,9 +454,7 @@ pub fn discover_host(
         Type::RAW,
         Some(Protocol::from((libc::ETH_P_ALL as u16).to_be() as i32)),
     )?;
-    // let sockaddr = create_packet_sockaddr(*ifindex);
     socket.bind_device(Some(ifname.as_bytes()))?;
-    // println!("sub 1");
 
     set_iface_up(*ifindex as i32)?;
     for _ in 0..total_retries {
@@ -486,7 +487,6 @@ pub fn discover_host(
         let sockaddr = create_packet_sockaddr(*ifindex);
         // sending the socket
         socket.send_to(&full_packet, &sockaddr)?;
-        println!("Sub 2");
 
         socket.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
@@ -598,6 +598,7 @@ pub fn request_host(
     );
     let send_socket = UdpSocket::bind(addr)?;
     // let std_addr = SocketAddrV4::new(server_ip, 67);
+    println!("Sub 1");
 
     let sockaddr = create_packet_sockaddr(ifindex);
     socket.bind(&sockaddr)?;
@@ -605,8 +606,9 @@ pub fn request_host(
 
     bind_socket_to_device(&send_socket, &ifname)?;
     socket.bind_device(Some(ifname.as_bytes()))?;
+    println!("Sub 2");
 
-    let timeout = Instant::now() + Duration::from_secs(5);
+    let timeout = Instant::now();
 
     let msg = Packet {
         reply: false,
@@ -628,13 +630,13 @@ pub fn request_host(
     let mut buf = [0u8; 1500];
     let encoded = msg.encode(&mut buf);
     send_socket.send_to(encoded, std_addr)?;
+    println!("Sub 3");
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
-    // let mut res_buf = [0u8; 4096];
 
     loop {
-        let start = Instant::now();
-        if start >= timeout {
+        println!("In loop");
+        if timeout.elapsed() >= Duration::from_secs(5) {
             println!("Timeout");
             break;
         }
@@ -710,11 +712,11 @@ pub fn connect_via_ethernet(
     mac: [u8; 6],
 ) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
-    setup_iface(ifindex)?;
+    set_iface_up(ifindex as i32)?;
     println!("CHeckpoint 1");
 
     let data = discover_host(&ifindex, ifname, mac)?;
-    println!("CHeckpoint 2");
+    println!("CHeckpoint 2 data recieved: {:#?}", data);
 
     if let Some(offer) = data.offer
         && let Some(server_id) = data.gateway
@@ -722,17 +724,9 @@ pub fn connect_via_ethernet(
     {
         let mac_address = offer.chaddr;
 
-        let edata = request_host(mac_address, current_ip, server_id, false)?;
+        let mut edata = request_host(mac_address, current_ip, server_id, false)?;
         println!("Ethernet: {:#?}", edata);
-        DhcpStorage::write_file(&mut DhcpFile {
-            ip_addr: edata.ip_addr,
-            gateway: data.gateway,
-            subnet_mask: data.subnet_mask,
-            dns_servers: data.dns_servers,
-            server_id: data.server_id,
-            lease_duration: data.lease_duration,
-            ..Default::default()
-        })?;
+        DhcpStorage::write_from_dhcplease(&mut edata)?;
         add_addr(ifindex, current_ip)?;
         set_default_route(ifindex, server_id)?;
         set_dns(edata.dns_servers)?;

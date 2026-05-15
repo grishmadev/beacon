@@ -97,9 +97,14 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
 
 pub fn manage_lease_thread() -> Result<(), Box<dyn Error>> {
     thread::spawn(move || {
+        let mut last_read = DhcpFile::default();
         loop {
             let info = DhcpStorage::read_file();
             if let Ok(Some(content)) = info {
+                if last_read != content {
+                    last_read = content.clone();
+                    println!("New DHCP Connextion: {:#?}", content);
+                }
                 let time_init = content.time_initiated;
                 let ls_dur = content.lease_duration as i64;
                 manage_lease(time_init, ls_dur);

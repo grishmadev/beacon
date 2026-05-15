@@ -36,6 +36,38 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .constraints([Constraint::Min(0), Constraint::Length(15)])
         .split(left_inner);
 
+    // Block for notifications
+    if let Some(ref msg) = app.notification {
+        let block = Block::new()
+            .title(" Notification ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .fg(Color::Yellow);
+
+        let area = centered_rect(60, 40, rect.area());
+
+        rect.render_widget(Clear, area);
+        rect.render_widget(Paragraph::new(msg.to_string()).block(block), area);
+    }
+
+    if app.active_tab == Tab::Input {
+        let input_text = if app.input_text.is_empty() {
+            "Enter Password".to_string()
+        } else {
+            app.input_text.clone()
+        };
+        let block = Block::new()
+            .title(" Password ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .fg(Color::LightBlue);
+
+        let area = centered_rect(50, 5, rect.area());
+        rect.render_widget(Clear, area);
+        rect.render_widget(Paragraph::new(input_text).block(block), area);
+    }
+
+    // Blcok for Interfaces
     let iface_vec = app
         .get_ifaces()
         .iter()
@@ -57,6 +89,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         .highlight_style(Style::default().bg(Color::Blue))
         .highlight_symbol(">> ");
 
+    // Current Connection Info
     if let Some(curcon) = app.current_connection.clone() {
         let mut current_connection_list = vec![];
         let mut add_attr = |l: &str, r: &str| {
@@ -141,18 +174,6 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     )
     .row_highlight_style(Style::default().bg(Color::Yellow));
 
-    if let Some(ref msg) = app.notification {
-        let block = Block::new()
-            .title(" Notification ")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .fg(Color::Yellow);
-
-        let area = centered_rect(60, 40, rect.area());
-
-        rect.render_widget(Clear, area);
-        rect.render_widget(Paragraph::new(msg.to_string()).block(block), area);
-    }
     // rendering active and non-active tab based on condition
     if app.active_tab == Tab::Interface {
         rect.render_stateful_widget(interfaces_block, left_inner_chunks[0], &mut app.iface_index);
