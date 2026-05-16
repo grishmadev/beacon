@@ -1,15 +1,8 @@
 use std::{
-    collections::HashMap,
     error::Error,
     io::{Read, Write},
-    ops::{Add, AddAssign, Mul},
+    ops::Mul,
     os::unix::net::UnixStream,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant},
 };
 
 use chrono::{TimeZone, Utc};
@@ -20,8 +13,7 @@ use crate::{
         connect_to, current_connection, disconnect_connection, list_active_signals,
         list_all_signals,
     },
-    debug::write,
-    types::{DhcpLease, Host, InterfaceType},
+    types::{Interface, InterfaceType},
     wifi::{
         dhcp_connection::{DhcpFile, DhcpStorage},
         helper::{get_family_info, get_interfaces, renew_connection},
@@ -67,11 +59,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 password,
             } => match connect_to(&family_info, &interfaces, iface, bssid, password).await {
                 Ok(_) => {
-                    if iface.iftype == InterfaceType::Wired {
-                        manage_lease_thread(true)?;
-                    } else {
-                        manage_lease_thread(false)?;
-                    }
+                    manage_lease_thread(iface)?;
                     Response::Connected
                 }
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
@@ -99,8 +87,9 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     Ok(response)
 }
 
-pub fn manage_lease_thread(wired: bool) -> Result<(), Box<dyn Error>> {
-    thread::spawn(move || {
+pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
+    let iface = iface.clone();
+    tokio::spawn(async move {
         let mut last_read = DhcpFile::default();
         loop {
             let info = DhcpStorage::read_file();
@@ -111,7 +100,7 @@ pub fn manage_lease_thread(wired: bool) -> Result<(), Box<dyn Error>> {
                 }
                 let time_init = content.time_initiated;
                 let ls_dur = content.lease_duration as i64;
-                manage_lease(wired, time_init, ls_dur);
+                manage_lease(&iface, time_init, ls_dur);
             } else {
                 break;
             }
@@ -121,36 +110,22 @@ pub fn manage_lease_thread(wired: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn manage_lease(wired: bool, time_init: i64, ls_dur: i64) {
+fn manage_lease(iface: &Interface, time_init: i64, ls_dur: i64) {
     let now = Utc::now();
-    let t1 = Utc.timestamp_opt((ls_dur / 2) + time_init, 0).single();
-    let t2 = Utc
-        .timestamp_opt((ls_dur as f64).mul(0.875) as i64 + time_init, 0)
-        .single();
-    if let Some(t1) = t1
-        && let Some(t2) = t2
-    {
-        let data = if now > t2 {
-            renew_connection(true, wired)
-        } else if now > t1 {
-            renew_connection(false, wired)
-        } else {
-            Err("Nothing happened.".into())
-        };
-        if let Ok(Some(data)) = data {
-            DhcpStorage::write_file(&mut DhcpFile {
-                ip_addr: data.ip_addr,
-                subnet_mask: data.subnet_mask,
-                gateway: data.gateway,
-                dns_servers: data.dns_servers,
-                server_id: data.server_id,
-                lease_duration: data.lease_duration,
-                ..Default::default()
-            });
-        };
+    let t1 = ls_dur / 2;
+    let t2 = ls_dur as f64 * 0.875;
+    let time_left = Utc.timestamp_opt(ls_dur + time_init, 0).single().unwrap() - now;
+    let time_left = time_left.num_seconds();
+    let data = if time_left + t2 as i64 <= ls_dur {
+        renew_connection(iface, true)
+    } else if time_left + t1 <= ls_dur {
+        renew_connection(iface, false)
     } else {
-        panic!("Cannot parse time.");
-    }
+        Err("Nothing happened.".into())
+    };
+    if let Ok(Some(data)) = data {
+        let _ = DhcpStorage::write_from_dhcplease(&data);
+    };
 }
 
 pub async fn response(cmd: &Command) -> Result<Response, Box<dyn Error>> {

@@ -6,7 +6,7 @@ use beacon::{
     wifi::{
         dhcp_connection::DhcpStorage,
         helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
-        wpa_supplicant::connect_via_ethernet,
+        wpa_supplicant::{connect, connect_via_ethernet},
     },
 };
 use chrono::{TimeZone, Utc};
@@ -22,7 +22,7 @@ async fn main() {
                 .ifname
                 .as_ref()
                 .unwrap_or(&"---".to_string())
-                .starts_with("en")
+                .starts_with("wlo1")
         })
         .unwrap();
     let ifindex = interface.ifindex.unwrap();
@@ -30,10 +30,11 @@ async fn main() {
     let family_info = get_family_info().unwrap();
     // let cmd = Command::ListActiveConnections(interface.clone());
     // let response = execute(&cmd).await.unwrap();
-    let mac = mac_to_bytes(&interface.mac.clone().unwrap());
+    // let mac = mac_to_bytes(&interface.mac.clone().unwrap());
     let current_ip = get_current_ip().unwrap().unwrap();
-    let server_id = get_gateway_ip();
+    // let server_id = get_gateway_ip();
     println!("current_ip: {:#?}", current_ip);
-    let res = connect_via_ethernet(ifindex, &ifname, mac);
-    println!("Ether: {:#?}", res);
+    // let res = connect_via_ethernet(ifindex, &ifname, mac);
+    // println!("Ether: {:#?}", res);
+    let res = connect(interface, "刀", "kakakakaka").await;
 }

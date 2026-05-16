@@ -9,8 +9,8 @@ use std::os::fd::AsRawFd;
 use std::os::raw;
 use std::os::unix::net::UnixDatagram;
 use std::process::Command;
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{slice, thread};
 
 use dhcp4r::options::{DhcpOption, MessageType, RawDhcpOption};
 use dhcp4r::packet::Packet;
@@ -30,6 +30,7 @@ use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, sa_fami
 
 use crate::backend::functions::list_interfaces;
 use crate::debug::write as cwrite;
+use crate::mac_to_bytes;
 use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::helper::{
@@ -37,13 +38,9 @@ use crate::wifi::helper::{
     set_default_route, set_iface_up, setup_iface, validate_packet, validate_packet_v2,
 };
 
-pub async fn connect(
-    mac_address: [u8; 6],
-    ifname: &str,
-    ifindex: &u32,
-    ssid: &str,
-    password: &str,
-) -> Result<(), Box<dyn Error>> {
+pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
+    let ifname = iface.ifname.as_ref().ok_or("Interface Name not found.")?;
+    let ifindex = iface.ifindex.as_ref().ok_or("Interface Index not found.")?;
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
     let client_path = format!("/tmp/beacon_{}", std::process::id());
 
@@ -119,7 +116,7 @@ pub async fn connect(
         send_cmd("SAVE_CONFIG")?;
         network_id
     };
-    cwrite(format!("found network: {}", network_id));
+    println!("found network: {}", network_id);
 
     // disable other networks incase wpa_supplicant connects to any cached network
     let disable_ok = send_cmd("DISABLE_NETWORK all")?;
@@ -132,7 +129,7 @@ pub async fn connect(
         return Err(format!("Couldn't connect to {}. {}", ssid, select_ok).into());
     }
 
-    cwrite(format!("Connecting to {}..", ssid));
+    println!("Connecting to {}..", ssid);
     let mut recv_buffer = [0u8; 1024 * 4];
 
     loop {
@@ -143,9 +140,9 @@ pub async fn connect(
                 let event = String::from_utf8_lossy(&recv_buffer[..size])
                     .trim()
                     .to_string();
-                cwrite(format!("event: {}", event));
+                println!("event: {}", event);
                 if event.contains("CTRL-EVENT-CONNECTED") {
-                    cwrite("Connected.".into());
+                    println!("Connected.");
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
                     send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
@@ -153,25 +150,30 @@ pub async fn connect(
                     return Err("Authentication failed. Try Again.".into());
                 } else if event.contains("CTRL-EVENT-NETWORK-NOT-FOUND") {
                     return Err("Network not found, Make sure host is in range.".into());
+                } else if event.contains("CTRL-EVENT-SSID-TEMP-DISABLED") {
+                    if event.contains("reason=WRONG_KEY") {
+                        return Err(format!("wpa_supplicant: {}", event).into());
+                    }
+                    print!("wpa_supplicant: {}", event);
+                    continue;
                 }
             }
             Err(_) => return Err("connection timed out after 10 secs.".into()),
         }
     }
     // Discover packet sent here
-    let host_data = discover_host(ifindex, ifname, mac_address)?;
+    let host_data = discover_host(iface)?;
     // cwrite(format!("host data: {:#?}", host_data));
 
-    if let Some(offer) = &host_data.offer {
-        // Request packet sent here
-        let mac = offer.chaddr;
-        if let (Some(ip_addr), Some(offer)) = (host_data.ip_addr, host_data.offer) {
-            let mut data = request_host_wireless(mac, ip_addr, host_data.server_id, ifname)?;
-            DhcpStorage::write_from_dhcplease(&mut data)?;
-        } else {
-            return Err("Failed to get ip address from dhcp server.".into());
-        }
+    // if let Some(offer) = &host_data.offer {
+    // Request packet sent here
+    if let Some(ip_addr) = host_data.ip_addr {
+        let data = request_host_wireless(iface, ip_addr, host_data.server_id)?;
+        DhcpStorage::write_from_dhcplease(&data)?;
+    } else {
+        return Err("Failed to get ip address from dhcp server.".into());
     }
+    // }
 
     let (connection, handle, _) = new_connection()?;
 
@@ -334,10 +336,9 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
 }
 
 pub fn request_host_wireless(
-    mac: [u8; 6],
+    iface: &Interface,
     current_ip: Ipv4Addr,
     server_id: Option<Ipv4Addr>,
-    ifname: &str,
 ) -> Result<DhcpLease, Box<dyn Error>> {
     let mut options = Vec::new();
 
@@ -348,14 +349,6 @@ pub fn request_host_wireless(
     // requested ip address (optins 50)
     options.push(DhcpOption::RequestedIpAddress(current_ip));
 
-    // options 54
-    // if let Some(server_id) = offer.options.iter().find_map(|o| {
-    //     if let DhcpOption::ServerIdentifier(id) = o {
-    //         Some(*current_ip)
-    //     } else {
-    //         None
-    //     }
-    // })
     if let Some(server_id) = server_id {
         options.push(DhcpOption::ServerIdentifier(server_id));
     }
@@ -364,48 +357,54 @@ pub fn request_host_wireless(
     options.push(DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]));
 
     let xid = rand::random();
+    let mac = iface.mac.as_ref().unwrap();
+    let ifindex = iface.ifindex.as_ref().unwrap();
+    let ifname = iface.ifname.as_ref().unwrap();
     let request_packet = Packet {
         reply: false,
         hops: 0,
         xid,
         ciaddr: current_ip,
-        chaddr: mac,
+        chaddr: mac_to_bytes(mac),
         secs: 0,
         broadcast: true,
-        yiaddr: Ipv4Addr::UNSPECIFIED,
-        siaddr: Ipv4Addr::UNSPECIFIED,
-        giaddr: Ipv4Addr::UNSPECIFIED,
+        yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+        siaddr: Ipv4Addr::new(0, 0, 0, 0),
+        giaddr: Ipv4Addr::new(0, 0, 0, 0),
         options,
     };
 
     // bind socket to 0.0.0.0 because we dont yet have an IP
-    let socket = UdpSocket::bind("0.0.0.0:68")?;
+    let send_socket = UdpSocket::bind("0.0.0.0:68")?;
+    let socket = Socket::new(
+        Domain::PACKET,
+        Type::RAW,
+        Some(Protocol::from(libc::ETH_P_ALL)),
+    )?;
 
     // allow broadcasting
-    socket.set_broadcast(true)?;
+    send_socket.set_broadcast(true)?;
 
-    bind_socket_to_device(&socket, ifname)?;
+    bind_socket_to_device(&send_socket, &ifname)?;
+    socket.bind_device(Some(ifname.as_bytes()))?;
+    // let sockaddr = SockAddr::from(SocketAddrV4::new(current_ip, 67));
+    let sockaddr = create_packet_sockaddr(*ifindex);
+    socket.bind(&sockaddr)?;
 
     let dest = "255.255.255.255:67";
 
     let mut buf = [0u8; 1500];
     let data = request_packet.encode(&mut buf);
 
-    socket.send_to(data, dest)?;
+    send_socket.send_to(data, dest)?;
 
-    println!(
-        "DHCPREQUESST msg sent for IP: {:?}",
-        request_packet.options.iter().find_map(|opt| {
-            if let dhcp4r::options::DhcpOption::RequestedIpAddress(ip) = opt {
-                Some(ip)
-            } else {
-                None
-            }
-        }),
-    );
+    if let Some(ip) = server_id {
+        println!("DHCPREQUESST msg sent for IP: {:?}", ip);
+    }
 
     let timeout = Instant::now();
-    let mut buf = [0u8; 4096];
+    // let mut buf = [0u8; 4096];
+    let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
     let mut result = DhcpLease::default();
     loop {
         if timeout.elapsed() >= Duration::from_secs(5) {
@@ -414,7 +413,8 @@ pub fn request_host_wireless(
         }
         match socket.recv(&mut buf) {
             Ok(size) => {
-                let raw_data = &buf[..size];
+                // let raw_data = &buf[..size];
+                let raw_data = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
                 println!("Raw data: {:?}", raw_data);
                 let packet = match validate_packet_v2(raw_data, size)? {
                     Some(s) => {
@@ -509,12 +509,12 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
     Ok(())
 }
 
-pub fn discover_host(
-    ifindex: &u32,
-    ifname: &str,
-    // client mac
-    mac_address: [u8; 6],
-) -> Result<DhcpLease, Box<dyn Error>> {
+pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
+    let ifname = iface.ifname.as_ref().expect("No ifname found.");
+    let ifindex = iface.ifindex.as_ref().expect("No Ifindex found.");
+    let mac = iface.mac.as_ref().expect("No Ifindex found.");
+
+    let mac = mac_to_bytes(&mac);
     // point it at global broadcast address
     // socket used only for sending signals
     // let broadcast_addr: SockAddr =
@@ -541,7 +541,7 @@ pub fn discover_host(
             yiaddr: Ipv4Addr::UNSPECIFIED,
             siaddr: Ipv4Addr::UNSPECIFIED,
             giaddr: Ipv4Addr::UNSPECIFIED,
-            chaddr: mac_address,
+            chaddr: mac,
             options: vec![
                 DhcpOption::DhcpMessageType(MessageType::Discover),
                 DhcpOption::ParameterRequestList(vec![2, 3, 6, 15, 51]), // Subnet, Router, DNS, Domain
@@ -551,7 +551,7 @@ pub fn discover_host(
         let mut buf = [0u8; 1500];
         let slice = msg.encode(&mut buf);
 
-        let ethheader = PacketBuilder::ethernet2(mac_address, [255, 255, 255, 255, 255, 255])
+        let ethheader = PacketBuilder::ethernet2(mac, [255, 255, 255, 255, 255, 255])
             .ipv4([0, 0, 0, 0], [255, 255, 255, 255], 64)
             .udp(68, 67);
         let mut full_packet = Vec::<u8>::with_capacity(ethheader.size(slice.len()));
@@ -702,10 +702,12 @@ pub fn request_host_wired(
 
     let mut buf = [0u8; 1500];
     let encoded = msg.encode(&mut buf);
+    println!("dest addr: {:?}", std_addr);
     send_socket.send_to(encoded, std_addr)?;
     println!("Sub 3");
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
+    // let mut res_buf = [0u8; 2000];
 
     loop {
         println!("In loop:");
@@ -779,16 +781,15 @@ pub fn request_host_wired(
     Err("Failed after retry.".into())
 }
 
-pub fn connect_via_ethernet(
-    ifindex: u32,
-    ifname: &str,
-    mac: [u8; 6],
-) -> Result<(), Box<dyn Error>> {
+pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
-    set_iface_up(ifindex as i32)?;
+    let ifindex = iface.ifindex.as_ref().unwrap();
+    // let ifname = iface.ifname.as_ref().unwrap();
+    // let mac = iface.mac.as_ref().unwrap();
+    set_iface_up(*ifindex as i32)?;
     println!("CHeckpoint 1");
 
-    let data = discover_host(&ifindex, ifname, mac)?;
+    let data = discover_host(iface)?;
     println!("CHeckpoint 2 data recieved: {:#?}", data);
 
     if let Some(offer) = data.offer
@@ -799,9 +800,9 @@ pub fn connect_via_ethernet(
 
         let mut edata = request_host_wired(mac_address, current_ip, server_id, false)?;
         println!("Ethernet: {:#?}", edata);
-        DhcpStorage::write_from_dhcplease(&mut edata)?;
-        add_addr(ifindex, current_ip)?;
-        set_default_route(ifindex, server_id)?;
+        DhcpStorage::write_from_dhcplease(&edata)?;
+        add_addr(*ifindex, current_ip)?;
+        set_default_route(*ifindex, server_id)?;
         set_dns(edata.dns_servers)?;
         Ok(())
     } else {

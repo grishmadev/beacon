@@ -68,10 +68,6 @@ pub async fn connect_to(
         .iter()
         .find(|e| e.bssid.as_deref() == Some(bssid))
         .ok_or("No such Connection Found.")?;
-    let mac_address = iface.mac.as_ref().ok_or("MAC Address not found.")?;
-    let mac_bytes = mac_to_bytes(mac_address);
-    let ifname = iface.ifname.as_ref().ok_or("Interface Name not found.")?;
-    let ifindex = iface.ifindex.as_ref().ok_or("Interface Index not found.")?;
     let saved_networks = list_all_signals()?;
     let ssid = target.ssid.as_ref().ok_or("Target SSID missing.")?;
     let found_password_option = saved_networks.iter().find(|e| &e.ssid == ssid);
@@ -90,7 +86,7 @@ pub async fn connect_to(
         },
     }
     let bssid = target.bssid.as_ref().ok_or("Target BSSID missing.")?;
-    match connect(mac_bytes, ifname, ifindex, ssid, &final_password).await {
+    match connect(iface, ssid, &final_password).await {
         Ok(_) => {
             // saving connection
             let connection = Connection {

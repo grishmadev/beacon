@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use chrono::{TimeZone, Utc};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -48,23 +49,6 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
 
         rect.render_widget(Clear, area);
         rect.render_widget(Paragraph::new(msg.to_string()).block(block), area);
-    }
-
-    if app.active_tab == Tab::Input {
-        let input_text = if app.input_text.is_empty() {
-            "Enter Password".to_string()
-        } else {
-            app.input_text.clone()
-        };
-        let block = Block::new()
-            .title(" Password ")
-            .borders(Borders::ALL)
-            .border_type(BorderType::Double)
-            .fg(Color::LightBlue);
-
-        let area = centered_rect(50, 5, rect.area());
-        rect.render_widget(Clear, area);
-        rect.render_widget(Paragraph::new(input_text).block(block), area);
     }
 
     // Blcok for Interfaces
@@ -122,6 +106,12 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
             "Rebinding Time",
             &(curcon.lease_duration as f32 * 0.875).to_string(),
         );
+        let time_left = Utc
+            .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
+            .single()
+            .unwrap()
+            - Utc::now();
+        add_attr("Time Left", &format!("{}s", time_left.num_seconds()));
 
         let current_connection = List::new(current_connection_list).block(
             Block::default()
@@ -181,6 +171,22 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     } else {
         rect.render_stateful_widget(hosts_block, chunks[1], &mut app.host_index);
         rect.render_widget(interfaces_block, left_inner_chunks[0]);
+    }
+    if app.active_tab == Tab::Input {
+        let input_text = if app.input_text.is_empty() {
+            "Enter Password".to_string()
+        } else {
+            app.input_text.clone()
+        };
+        let block = Block::new()
+            .title(" Password ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .fg(Color::LightBlue);
+
+        let area = centered_rect(50, 5, rect.area());
+        rect.render_widget(Clear, area);
+        rect.render_widget(Paragraph::new(input_text).block(block), area);
     }
 }
 

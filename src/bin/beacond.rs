@@ -39,14 +39,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .find(|iface| iface.iftype == InterfaceType::Wired);
 
             match (is_connected, eth) {
-                (false, Some(f)) => {
-                    if let (Some(ifindex), Some(ifname), Some(mac)) =
-                        (f.ifindex, f.ifname.clone(), f.mac.clone())
-                        && connect_via_ethernet(ifindex, &ifname, mac_to_bytes(&mac)).is_ok()
-                    {
-                        println!("Connected via Ethernet");
-                        status_clone.store(true, Ordering::SeqCst);
-                    }
+                (false, Some(f)) if connect_via_ethernet(f).is_ok() => {
+                    println!("Connected via Ethernet");
+                    status_clone.store(true, Ordering::SeqCst);
                 }
                 (true, None) => {
                     println!("Disconnected Ethernet");

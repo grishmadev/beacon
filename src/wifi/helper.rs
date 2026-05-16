@@ -447,6 +447,8 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 connection.dns_servers = edata.dns_servers;
                 connection.server_id = edata.server_id;
                 connection.lease_duration = edata.lease_duration;
+                connection.time_initiated = edata.time_initiated;
+                println!("connection :{:#?}", connection);
             }
             return Ok(Some(connection));
         }
@@ -570,7 +572,11 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
     Ok(())
 }
 
-pub fn renew_connection(broadcast: bool, wired: bool) -> Result<Option<DhcpLease>, Box<dyn Error>> {
+pub fn renew_connection(
+    iface: &Interface,
+    broadcast: bool,
+) -> Result<Option<DhcpLease>, Box<dyn Error>> {
+    let wired = iface.iftype == InterfaceType::Wired;
     let family_info = get_family_info()?;
     let family_id = family_info.id;
     let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
@@ -578,7 +584,6 @@ pub fn renew_connection(broadcast: bool, wired: bool) -> Result<Option<DhcpLease
     // IP for this client (This Device)
     let current_ip = current.ip_addr.expect("No IP Address found.");
     let mac = current.mac.expect("No MAC Address found.");
-    let ifname = current.ifname.expect("No Ifname found.");
     let mac_address = mac_to_bytes(&mac);
 
     // IP of the server
@@ -587,7 +592,7 @@ pub fn renew_connection(broadcast: bool, wired: bool) -> Result<Option<DhcpLease
     let data = if wired {
         request_host_wired(mac_address, current_ip, server_id, broadcast)?
     } else {
-        request_host_wireless(mac_address, current_ip, None, &ifname)?
+        request_host_wireless(iface, current_ip, None)?
     };
     Ok(Some(data))
 }

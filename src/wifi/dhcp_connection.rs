@@ -45,9 +45,10 @@ impl DhcpStorage {
 
     pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
-        if !path.exists() {
-            content.time_initiated = Utc::now().timestamp();
+        if path.exists() {
+            DhcpStorage::empty_out()?;
         }
+        content.time_initiated = Utc::now().timestamp();
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -58,7 +59,7 @@ impl DhcpStorage {
         file.sync_all()?;
         Ok(())
     }
-    pub fn write_from_dhcplease(data: &mut DhcpLease) -> Result<(), Box<dyn Error>> {
+    pub fn write_from_dhcplease(data: &DhcpLease) -> Result<(), Box<dyn Error>> {
         let mut content = DhcpFile {
             ip_addr: data.ip_addr,
             subnet_mask: data.subnet_mask,

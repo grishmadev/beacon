@@ -1,4 +1,9 @@
-use std::{error::Error, fs, net::Ipv4Addr};
+use std::{
+    error::Error,
+    fs::{self, OpenOptions},
+    net::Ipv4Addr,
+    path::Path,
+};
 
 use crate::{HISTORY_PATH, types::Connection};
 
@@ -46,6 +51,12 @@ pub fn delete_connection_from_history(bssid: Ipv4Addr) -> Result<(), Box<dyn Err
 
 fn save_to_disk(connections: &Vec<Connection>) -> Result<(), Box<dyn Error>> {
     let content = serde_json::to_string_pretty(connections)?;
+    if !Path::new(HISTORY_PATH).exists() {
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .open(HISTORY_PATH)?;
+    }
     fs::write(HISTORY_PATH, content)?;
     Ok(())
 }

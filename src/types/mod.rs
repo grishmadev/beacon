@@ -107,6 +107,7 @@ pub struct CurrentConnection {
     pub dns_servers: Vec<Ipv4Addr>,
     pub server_id: Option<Ipv4Addr>,
     pub lease_duration: u32,
+    pub time_initiated: i64,
 }
 
 impl CurrentConnection {
