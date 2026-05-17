@@ -93,14 +93,19 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
         let mut last_read = DhcpFile::default();
         loop {
             let info = DhcpStorage::read_file();
-            if let Ok(Some(content)) = info {
-                if last_read != content {
-                    last_read = content.clone();
-                    println!("New DHCP Connextion: {:#?}", content);
+            if let Ok(files) = info {
+                if files.is_empty() {
+                    continue;
                 }
-                let time_init = content.time_initiated;
-                let ls_dur = content.lease_duration as i64;
-                manage_lease(&iface, time_init, ls_dur);
+                if let Some(content) = files.first() {
+                    if last_read != content.to_owned() {
+                        last_read = content.clone();
+                        println!("New DHCP Connextion: {:#?}", content);
+                    }
+                    let time_init = content.time_initiated;
+                    let ls_dur = content.lease_duration as i64;
+                    manage_lease(&iface, time_init, ls_dur);
+                }
             } else {
                 break;
             }

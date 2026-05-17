@@ -5,6 +5,7 @@ use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
 use dhcp4r::packet::Packet;
+use libc::{AF_NETLINK, NETLINK_ROUTE, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
 use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, Rtn, Rtprot};
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Rtattr, RtattrBuilder, RtmsgBuilder};
 use neli::socket::synchronous::NlSocketHandle;
@@ -437,14 +438,14 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
             }
             if let Some(gateway) = get_gateway_ip()
                 && let Ok(Some(ip)) = get_current_ip()
-                && let Ok(Some(edata)) = DhcpStorage::read_file()
+                && let Ok(files) = DhcpStorage::read_file()
+                && let Some(edata) = files.first()
             {
                 // let extra_data = request_host(mac_to_bytes(&mac), ip, gateway, true)?;
-
                 connection.ip_addr = Some(ip);
                 connection.subnet_mask = edata.subnet_mask;
                 connection.gateway = Some(gateway);
-                connection.dns_servers = edata.dns_servers;
+                connection.dns_servers = edata.dns_servers.to_owned();
                 connection.server_id = edata.server_id;
                 connection.lease_duration = edata.lease_duration;
                 connection.time_initiated = edata.time_initiated;
@@ -816,4 +817,35 @@ pub fn set_iface_up(ifindex: i32) -> Result<(), Box<dyn Error>> {
     nlmsg.to_bytes(&mut buf)?;
     socket.send(buf.get_ref(), Msg::empty())?;
     Ok(())
+}
+
+pub fn list_for_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
+    let socket = NlSocket::connect(
+        NlFamily::Route,
+        None,
+        Groups::new_groups(&[RTMGRP_LINK as u32]),
+    )?;
+
+    loop {
+        let mut buf = [0u8; 2048];
+        let (size, _) = socket.recv(&mut buf, Msg::empty())?;
+        let mut res_buf = Cursor::new(&buf[..size]);
+        let res: Nlmsghdr<u16, Ifinfomsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
+
+        if let NlPayload::Err(e) = res.nl_payload() {
+            return Err(format!("Kernel Error: {}", e).into());
+        }
+        if res.nl_type() == &u16::from(Rtm::Newlink)
+            && let NlPayload::Payload(payload) = res.nl_payload()
+            && payload.ifi_index() == &ifindex
+        {
+            let flags = payload.ifi_flags();
+            let is_up = flags.contains(Iff::UP);
+            let is_running = flags.contains(Iff::RUNNING);
+            if !is_up || !is_running {
+                println!("Interface [{}] is not up or running", ifindex);
+                return Ok(());
+            }
+        }
+    }
 }

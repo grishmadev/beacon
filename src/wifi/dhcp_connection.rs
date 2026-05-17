@@ -32,15 +32,15 @@ impl DhcpStorage {
             .open(DHCPINFO_PATH)?;
         Ok(())
     }
-    pub fn read_file() -> Result<Option<DhcpFile>, Box<dyn Error>> {
+    pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
         if !path.exists() || fs::metadata(path)?.len() == 0 {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let content = fs::read(path)?;
-        let dhcp_lease: DhcpFile = bincode::deserialize(&content)?;
+        let dhcp_lease: Vec<DhcpFile> = bincode::deserialize(&content)?;
 
-        Ok(Some(dhcp_lease))
+        Ok(dhcp_lease)
     }
 
     pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {

@@ -97,7 +97,12 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         if let Some(freq) = curcon.frequency {
             add_attr("Frequency", &freq.to_string());
         }
-        add_attr("Lease Duration", &curcon.lease_duration.to_string());
+        let time_left = Utc
+            .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
+            .single()
+            .unwrap()
+            - Utc::now();
+        add_attr("Time Left", &format!("{}s", time_left.num_seconds()));
         add_attr(
             "Renewal Time",
             &(curcon.lease_duration as f32 / 2.0).to_string(),
@@ -106,12 +111,6 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
             "Rebinding Time",
             &(curcon.lease_duration as f32 * 0.875).to_string(),
         );
-        let time_left = Utc
-            .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
-            .single()
-            .unwrap()
-            - Utc::now();
-        add_attr("Time Left", &format!("{}s", time_left.num_seconds()));
 
         let current_connection = List::new(current_connection_list).block(
             Block::default()
