@@ -34,7 +34,8 @@ use crate::mac_to_bytes;
 use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::helper::{
-    add_addr, create_packet_sockaddr, generate_client_id, get_iface_mac, get_interfaces,
+    add_addr, create_packet_sockaddr, generate_client_id, get_current_ip, get_gateway_ip,
+    get_iface_mac, get_interfaces, remove_lease_and_gateway_ip, return_on_disconnect,
     set_default_route, set_iface_up, setup_iface, validate_packet, validate_packet_v2,
 };
 
@@ -188,30 +189,152 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
     .await?;
 
     set_dns(host_data.dns_servers)?;
-    // tokio::signal::ctrl_c().await?;
+
+    // create a thread to disconnect completely upon server withdrawal
+    let ifindex = *ifindex;
+    let ifname = ifname.clone();
+    thread::spawn(move || {
+        // wait for disconnection
+        match return_on_disconnect(ifindex as i32) {
+            Ok(_) => {
+                println!("Engaging Full Disconnection from {}", ifindex);
+                disconnect(&ifname, false);
+                // engage complete disconnection
+            }
+            Err(e) => {
+                println!("Error while looping for disconnection.\n{}", e);
+            }
+        };
+    });
     Ok(())
 }
 
-pub fn disconnect(ifname: &str) -> Result<(), Box<dyn Error>> {
+pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5);
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
-    let skt = UnixDatagram::bind(&server_path)?;
-
-    skt.connect(&server_path)
+    let wpa_skt = UnixDatagram::bind(&server_path)?;
+    let ifaces = list_interfaces()?;
+    let iface = ifaces
+        .iter()
+        .find(|i| i.ifname == Some(ifname.to_string()))
+        .ok_or("Interface not found.")?
+        .to_owned();
+    let ifindex = iface.ifindex.expect("Coudldn't parse Ifindex.");
+    let mac = mac_to_bytes(&iface.mac.expect("Couldn't parse mac."));
+    let ip_addr = get_current_ip()?.ok_or("No Current IP found.")?;
+    let prefix_len = 24;
+    let gateway_ip = get_gateway_ip().expect("Gateway IP not found.");
+    wpa_skt
+        .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
+    if grace {
+        'outer: for _ in 0..5 {
+            let send_socket = UdpSocket::bind("0.0.0.0:68")?;
+            let socket = Socket::new(
+                Domain::PACKET,
+                Type::RAW,
+                Some(Protocol::from(libc::ETH_P_ALL)),
+            )?;
+            send_socket.set_broadcast(true)?;
+            bind_socket_to_device(&send_socket, ifname)?;
+            socket.bind_device(Some(ifname.as_bytes()));
 
-    skt.send("DISCONNECT".as_bytes())?;
-    let mut recv_buf = [0u8; 4096];
-    loop {
-        // wait for 5 secs to disconnet
-        skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-        let size = skt.recv(&mut recv_buf)?;
-        let event = String::from_utf8_lossy(&recv_buf[..size])
-            .trim()
-            .to_string();
-        if event.contains("CTRL-EVENT-DISCONNECTED") {
-            return Ok(());
+            let sockaddr = create_packet_sockaddr(ifindex);
+            socket.bind(&sockaddr)?;
+            let packet = Packet {
+                reply: false,
+                hops: 0,
+                xid: rand::random(),
+                ciaddr: ip_addr,
+                chaddr: mac,
+                secs: 0,
+                broadcast: true,
+                yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+                siaddr: Ipv4Addr::new(0, 0, 0, 0),
+                giaddr: Ipv4Addr::new(0, 0, 0, 0),
+                options: vec![DhcpOption::DhcpMessageType(MessageType::Release)],
+            };
+            let dest = gateway_ip.to_string() + ":67";
+            let mut buf = [0u8; 1500];
+            let data = packet.encode(&mut buf);
+            send_socket.send_to(data, dest.clone())?;
+
+            let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
+            let mut err: Option<String> = None;
+            loop {
+                if start.elapsed() >= timeout {
+                    break;
+                }
+                match socket.recv(&mut buf) {
+                    Ok(size) => {
+                        let raw_data =
+                            unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
+                        let res_packet = match validate_packet_v2(raw_data, size)? {
+                            Some(s) => {
+                                println!("Packet Successful");
+                                s
+                            }
+                            None => {
+                                println!("Conversion Error");
+                                continue;
+                            }
+                        };
+                        if packet.xid != res_packet.xid {
+                            continue;
+                        }
+                        for option in res_packet.options {
+                            match option {
+                                DhcpOption::DhcpMessageType(val) => match val {
+                                    MessageType::Ack => {
+                                        println!("Server side disconnected successfully");
+                                        break 'outer;
+                                    }
+                                    _ => {}
+                                },
+                                _ => {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("Disconnection Error: {}", e);
+                        err = Some(e.to_string());
+                    }
+                }
+            }
+            if let Some(e) = err {
+                return Err(e.into());
+            }
+        }
+    }
+    'outer: for _ in 0..5 {
+        wpa_skt.send("DISCONNECT".as_bytes())?;
+        let mut recv_buf = [0u8; 4096];
+        loop {
+            if start.elapsed() >= timeout {
+                continue 'outer;
+            }
+            // wait for 5 secs to disconnet
+            wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+            let size = wpa_skt.recv(&mut recv_buf)?;
+            let event = String::from_utf8_lossy(&recv_buf[..size])
+                .trim()
+                .to_string();
+            if event.contains("CTRL-EVENT-DISCONNECTED") {
+                let _ = DhcpStorage::empty_out();
+                break;
+            };
+        }
+
+        if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
+            break 'outer;
         };
     }
+    set_dns(vec![]);
+
+    Ok(())
 }
 
 pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
@@ -385,7 +508,7 @@ pub fn request_host_wireless(
     // allow broadcasting
     send_socket.set_broadcast(true)?;
 
-    bind_socket_to_device(&send_socket, &ifname)?;
+    bind_socket_to_device(&send_socket, ifname)?;
     socket.bind_device(Some(ifname.as_bytes()))?;
     // let sockaddr = SockAddr::from(SocketAddrV4::new(current_ip, 67));
     let sockaddr = create_packet_sockaddr(*ifindex);

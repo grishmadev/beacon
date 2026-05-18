@@ -104,7 +104,7 @@ pub async fn connect_to(
 }
 
 pub fn disconnect_connection(ifname: &str) -> Result<(), Box<dyn Error>> {
-    disconnect(ifname)?;
+    disconnect(ifname, true)?;
     Ok(())
 }
 

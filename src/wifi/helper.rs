@@ -5,8 +5,9 @@ use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
 use dhcp4r::packet::Packet;
-use libc::{AF_NETLINK, NETLINK_ROUTE, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
-use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, Rtn, Rtprot};
+use libc::{AF_NETLINK, NETLINK_ROUTE, RTM_DELADDR, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
+use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, RtmF, Rtn, Rtprot};
+use neli::err::Nlmsgerr;
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Rtattr, RtattrBuilder, RtmsgBuilder};
 use neli::socket::synchronous::NlSocketHandle;
 use neli::types::RtBuffer;
@@ -28,7 +29,7 @@ use neli::{
 };
 use socket2::{Domain, SockAddr, SockAddrStorage, Socket, Type};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::{error::Error, io::Cursor, path::Path};
@@ -480,20 +481,18 @@ pub fn get_current_ip() -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
     while let Some(Ok(res)) = iter.0.next() {
         match res.nl_payload() {
             NlPayload::Err(e) => return Err(format!("Kernel Error: {}", e).into()),
-            NlPayload::Payload(payload) => {
-                if payload.ifa_index() == &(ifindex as u32) {
-                    for rta in payload.rtattrs().iter() {
-                        match rta.rta_type() {
-                            Ifa::Local | Ifa::Address => {
-                                let bytes = rta.rta_payload().as_ref();
+            NlPayload::Payload(payload) if payload.ifa_index() == &ifindex => {
+                for rta in payload.rtattrs().iter() {
+                    match rta.rta_type() {
+                        Ifa::Local | Ifa::Address => {
+                            let bytes = rta.rta_payload().as_ref();
 
-                                if bytes.len() == 4 {
-                                    let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
-                                    return Ok(Some(ip));
-                                }
+                            if bytes.len() == 4 {
+                                let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+                                return Ok(Some(ip));
                             }
-                            _ => continue,
                         }
+                        _ => continue,
                     }
                 }
             }
@@ -819,7 +818,7 @@ pub fn set_iface_up(ifindex: i32) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn list_for_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
+pub fn return_on_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
     let socket = NlSocket::connect(
         NlFamily::Route,
         None,
@@ -848,4 +847,101 @@ pub fn list_for_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
             }
         }
     }
+}
+
+pub fn remove_lease_and_gateway_ip(
+    ifindex: u32,
+    ip_addr: Ipv4Addr,
+    gateway_ip: Ipv4Addr,
+    prefix_len: u8,
+) -> Result<(), Box<dyn Error>> {
+    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
+
+    let ip_bytes = ip_addr.octets();
+    let rtattr = RtattrBuilder::default()
+        .rta_type(Ifa::Local)
+        .rta_payload(ip_bytes.as_slice())
+        .build()?;
+
+    let mut rtbuf: RtBuffer<Ifa, Buffer> = RtBuffer::new();
+    rtbuf.push(rtattr);
+
+    // Building the interface structure
+    let ifaddrmsg = IfaddrmsgBuilder::default()
+        .ifa_family(RtAddrFamily::Inet) // IP V4
+        .ifa_prefixlen(prefix_len)
+        .ifa_flags(IfaF::empty())
+        .ifa_scope(RtScope::Universe)
+        .ifa_index(ifindex)
+        .rtattrs(rtbuf)
+        .build()?;
+
+    // Building message
+    let nlmsg = NlmsghdrBuilder::default()
+        .nl_type(Rtm::Deladdr)
+        .nl_flags(NlmF::REQUEST | NlmF::ACK)
+        .nl_payload(NlPayload::Payload(ifaddrmsg.clone()))
+        .build()?;
+
+    let mut cmd_buf = Cursor::new(Vec::new());
+    nlmsg.to_bytes(&mut cmd_buf)?;
+    socket.send(cmd_buf.get_ref(), Msg::empty())?;
+    let wait_for_ack = |socket: &NlSocket| -> Result<(), Box<dyn Error>> {
+        loop {
+            let mut res_buf = [0u8; 520];
+            let (size, _) = socket.recv(&mut res_buf, Msg::empty())?;
+            let mut slice = Cursor::new(Vec::from(&res_buf[..size]));
+
+            let msg: Nlmsghdr<u16, Nlmsgerr<u16>> = Nlmsghdr::from_bytes(&mut slice)?;
+            if let NlPayload::Payload(err) = msg.nl_payload() {
+                if *err.error() != 0 {
+                    println!(
+                        "Successfully removed IP {} for Interface {}",
+                        ip_addr, ifindex
+                    );
+                    return Err(io::Error::from_raw_os_error(-err.error()).into());
+                } else {
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    wait_for_ack(&socket)?;
+    cmd_buf.get_mut().clear();
+    cmd_buf.set_position(0);
+
+    // REMOVING GATEWAY IP
+    let gw_bytes = gateway_ip.octets();
+    let mut rtattrs = RtBuffer::new();
+    rtattrs.push(
+        RtattrBuilder::default()
+            .rta_type(Rta::Gateway)
+            .rta_payload(gw_bytes.as_slice())
+            .build()?,
+    );
+    let rtmsg = RtmsgBuilder::default()
+        .rtm_family(RtAddrFamily::Inet)
+        .rtm_dst_len(0)
+        .rtm_src_len(0)
+        .rtm_tos(0)
+        .rtm_table(RtTable::Unspec)
+        .rtm_protocol(Rtprot::Unspec)
+        .rtm_scope(RtScope::Universe)
+        .rtm_type(Rtn::Unicast)
+        .rtm_flags(RtmF::empty())
+        .rtattrs(rtattrs)
+        .build()?;
+
+    let nlmsg = NlmsghdrBuilder::default()
+        .nl_type(Rtm::Delroute)
+        .nl_flags(NlmF::REQUEST | NlmF::ACK)
+        .nl_payload(NlPayload::Payload(rtmsg))
+        .build()?;
+
+    nlmsg.to_bytes(&mut cmd_buf)?;
+    socket.send(cmd_buf.get_ref(), Msg::empty())?;
+    wait_for_ack(&socket)?;
+
+    Ok(())
 }
