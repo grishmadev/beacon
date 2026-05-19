@@ -9,7 +9,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    thread::{self, sleep},
+    thread,
     time::Duration,
 };
 use tokio::{
@@ -24,8 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Clean up old socket file if it exists
     let _ = fs::remove_file(SOCKET_PATH);
 
-    let listener = UnixListener::bind(SOCKET_PATH)?;
-    println!("Daemon listening on {}", SOCKET_PATH);
+    println!("Server Started. :D\nDaemon listening on {}", SOCKET_PATH);
 
     let connected_via_ether = Arc::new(AtomicBool::new(false));
     let status_clone = Arc::clone(&connected_via_ether);
@@ -52,27 +51,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
             thread::sleep(Duration::from_secs(2));
         }
     });
+    let listener = UnixListener::bind(SOCKET_PATH).unwrap();
     loop {
-        let (mut socket, _) = listener.accept().await?;
-
+        let (mut socket, _) = match listener.accept().await {
+            Ok(s) => s,
+            Err(_) => {
+                continue;
+            }
+        };
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
-            let n = socket.read(&mut buf).await.unwrap();
-
-            let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-            // dwrite(format!("Command recieved: {:#?}", cmd));
-            println!("Command recieved: {:#?}", cmd);
-            let response = match execute(&cmd).await {
-                Ok(s) => s,
-                Err(e) => Response::Error(e.to_string()),
+            match socket.read(&mut buf).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
+                    // println!("Command: {:#?}", cmd);
+                    let response = match execute(&cmd).await {
+                        Ok(s) => s,
+                        Err(e) => Response::Error(e.to_string()),
+                    };
+                    // println!("Response: {:#?}", response);
+                    let serialized = bincode::serialize(&response).unwrap();
+                    socket
+                        .write_all(&serialized)
+                        .await
+                        .expect("Couldn't Write to File");
+                }
+                Err(e) => {
+                    eprint!("Socket Error: {}", e);
+                }
             };
-            // dwrite(format!("Response: {:#?}", response));
-            println!("Response: {:#?}", response);
-            let serialized = bincode::serialize(&response).unwrap();
-            socket
-                .write_all(&serialized)
-                .await
-                .expect("Couldn't Write to File");
         });
     }
 }

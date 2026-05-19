@@ -71,7 +71,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
 
             Command::Disconnect => match disconnect_connection(&active_ifname) {
                 Ok(_) => Response::Disconnected,
-                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e).into()),
+                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
             },
 
             Command::Tick => Response::Tick,

@@ -1,15 +1,7 @@
 use beacon::{
-    Command, Response,
-    backend::functions::{disconnect_connection, list_active_signals, list_interfaces},
-    executer::execute,
-    mac_to_bytes,
-    wifi::{
-        dhcp_connection::DhcpStorage,
-        helper::{get_current_ip, get_family_info, get_gateway_ip, get_scan, trigger_scan},
-        wpa_supplicant::{connect, connect_via_ethernet},
-    },
+    backend::functions::list_interfaces,
+    wifi::helper::{get_current_ip, get_family_info, return_on_disconnect},
 };
-use chrono::{TimeZone, Utc};
 
 #[tokio::main]
 async fn main() {
@@ -36,5 +28,14 @@ async fn main() {
     println!("current_ip: {:#?}", current_ip);
     // let res = connect_via_ethernet(ifindex, &ifname, mac);
     // println!("Ether: {:#?}", res);
-    let res = connect(interface, "刀", "kakakakaka").await;
+    // let res = connect(interface, "刀", "kakakakaka").await;
+    match return_on_disconnect(ifindex as i32) {
+        Ok(_) => {
+            println!("Disconnected.")
+        }
+
+        Err(e) => {
+            println!("Err: {}", e);
+        }
+    };
 }

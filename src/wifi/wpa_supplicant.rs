@@ -332,7 +332,7 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
             break 'outer;
         };
     }
-    set_dns(vec![]);
+    set_dns(vec![])?;
 
     Ok(())
 }
