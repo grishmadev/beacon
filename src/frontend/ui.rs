@@ -161,7 +161,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
             .borders(Borders::ALL)
             .title(format!(" Hosts ({}) ", host_count)),
     )
-    .row_highlight_style(Style::default().bg(Color::Yellow));
+    .row_highlight_style(Style::default().bg(Color::Blue));
 
     // rendering active and non-active tab based on condition
     if app.active_tab == Tab::Interface {

@@ -1,6 +1,14 @@
 use beacon::{
+    Command,
     backend::functions::list_interfaces,
-    wifi::helper::{get_current_ip, get_family_info, return_on_disconnect},
+    executer::response,
+    wifi::{
+        helper::{
+            get_current_ip, get_family_info, get_gateway_ip, remove_lease_and_gateway_ip,
+            return_on_disconnect,
+        },
+        wpa_supplicant::disconnect,
+    },
 };
 
 #[tokio::main]
@@ -24,18 +32,22 @@ async fn main() {
     // let response = execute(&cmd).await.unwrap();
     // let mac = mac_to_bytes(&interface.mac.clone().unwrap());
     let current_ip = get_current_ip().unwrap().unwrap();
-    // let server_id = get_gateway_ip();
+    let server_id = get_gateway_ip();
     println!("current_ip: {:#?}", current_ip);
-    // let res = connect_via_ethernet(ifindex, &ifname, mac);
-    // println!("Ether: {:#?}", res);
     // let res = connect(interface, "刀", "kakakakaka").await;
-    match return_on_disconnect(ifindex as i32) {
-        Ok(_) => {
-            println!("Disconnected.")
-        }
-
-        Err(e) => {
-            println!("Err: {}", e);
-        }
-    };
+    // match return_on_disconnect(ifindex as i32) {
+    //     Ok(_) => {
+    //         if let Err(e) = remove_lease_and_gateway_ip(ifindex, current_ip, server_id.unwrap(), 64)
+    //         {
+    //             eprintln!("test Error: {}", e);
+    //         }
+    //         println!("Disconnected.")
+    //     }
+    //
+    //     Err(e) => {
+    //         println!("Err: {}", e);
+    //     }
+    // };
+    let res = response(&Command::ListActiveConnections(interface.clone())).await;
+    println!("Response: {:#?}", res);
 }

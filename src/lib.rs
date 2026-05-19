@@ -30,7 +30,7 @@ pub const SOCKET_PATH: &str = "/run/beacon.sock";
 pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 pub const DHCPINFO_PATH: &str = "/var/beacon_dhcp_info";
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, PartialEq)]
 pub enum Command {
     Ping,
     Tick,

@@ -193,7 +193,7 @@ impl App {
         }
         let hosts = self.get_hosts();
         let interfaces = self.get_ifaces();
-        if let Some(idx) = self.host_index.selected()
+        let cmd = if let Some(idx) = self.host_index.selected()
             && let Some(target_host) = hosts.get(idx)
             && let Some(iface_idx) = self.iface_index.selected()
             && let Some(iface) = interfaces.get(iface_idx)
@@ -203,12 +203,15 @@ impl App {
             } else {
                 target_host.bssid.clone().unwrap_or_default()
             };
-            let _ = sx.send(Command::Connect {
+            Command::Connect {
                 bssid,
                 password,
                 iface: iface.clone(),
-            });
-        }
+            }
+        } else {
+            Command::Notification("Cannot Connect, Interface not set.".into())
+        };
+        let _ = sx.send(cmd);
     }
 
     fn delete_char(&mut self) {
@@ -216,7 +219,7 @@ impl App {
     }
 
     pub fn handle_keys(&mut self, key: KeyEvent, sx: &Sender<Command>) {
-        match self.active_tab {
+        match self.active_tab.clone() {
             Tab::Input => match key.code {
                 KeyCode::Char(ch) => {
                     self.input_text.push(ch);
@@ -235,35 +238,43 @@ impl App {
                         self.active_tab = Tab::Interface;
                         self.input_text = String::new();
                     } else {
-                        sx.send(Command::Notification("Error in app".to_string()));
+                        let _ = sx.send(Command::Notification("Error in app".to_string()));
                     }
                 }
                 _ => {}
             },
-            _ => match key.code {
-                KeyCode::Enter => {
-                    let hosts = self.get_hosts();
-                    if hosts.iter().find(|h| h.is_connected).is_some() {
-                        let _ = sx.send(Command::Disconnect);
-                    } else {
-                        self.active_tab = Tab::Input;
+            s => {
+                if s == Tab::Hosts {
+                    match key.code {
+                        KeyCode::Enter => {
+                            let hosts = self.get_hosts();
+                            if hosts.iter().find(|h| h.is_connected).is_some() {
+                                println!("Sending Disconnect");
+                                let _ = sx.send(Command::Disconnect);
+                            } else {
+                                self.active_tab = Tab::Input;
+                            }
+                        }
+                        _ => {}
                     }
+                };
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.next();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.previous();
+                    }
+                    KeyCode::Tab
+                    | KeyCode::Right
+                    | KeyCode::Left
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l') => {
+                        self.toggle_tab();
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.next();
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.previous();
-                }
-                KeyCode::Tab
-                | KeyCode::Right
-                | KeyCode::Left
-                | KeyCode::Char('h')
-                | KeyCode::Char('l') => {
-                    self.toggle_tab();
-                }
-                _ => {}
-            },
+            }
         }
     }
 

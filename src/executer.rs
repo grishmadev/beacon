@@ -24,11 +24,6 @@ use crate::{
 const RETRIES: u32 = 5;
 
 pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
-    let family_info = get_family_info()?;
-    // let family_id = family_info.id;
-    let interfaces = get_interfaces()?;
-    let active_interface = find_active_interface();
-    let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
     let mut response = Response::Error("Uninitialized Response".into());
 
     for _ in 0..RETRIES {
@@ -41,6 +36,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
             }
 
             Command::ListActiveConnections(iface) => {
+                let family_info = get_family_info()?;
                 let connections = list_active_signals(&family_info, iface.clone())?;
                 if let Some(ifname) = iface.ifname.clone() {
                     Response::ActiveHosts(ifname, connections)
@@ -49,7 +45,10 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 }
             }
 
-            Command::ListInterfaces => Response::AllInterfaces(interfaces.clone()),
+            Command::ListInterfaces => {
+                let interfaces = get_interfaces()?;
+                Response::AllInterfaces(interfaces.clone())
+            }
 
             Command::Notification(msg) => Response::Notification(msg.to_owned()),
             Command::ClearNotification => Response::ClearNotification,
@@ -57,22 +56,31 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 bssid,
                 iface,
                 password,
-            } => match connect_to(&family_info, &interfaces, iface, bssid, password).await {
-                Ok(_) => {
-                    manage_lease_thread(iface)?;
-                    Response::Connected
+            } => {
+                let interfaces = get_interfaces()?;
+                let family_info = get_family_info()?;
+                match connect_to(&family_info, &interfaces, iface, bssid, password).await {
+                    Ok(_) => {
+                        manage_lease_thread(iface)?;
+                        Response::Connected
+                    }
+                    Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
                 }
-                Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
-            },
+            }
             Command::CurrentConnection => match current_connection() {
                 Ok(curcon) => Response::CurrentConnection(curcon),
                 Err(err) => Response::Error(err.to_string()),
             },
 
-            Command::Disconnect => match disconnect_connection(&active_ifname) {
-                Ok(_) => Response::Disconnected,
-                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
-            },
+            Command::Disconnect => {
+                let active_interface = find_active_interface();
+                let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
+
+                match disconnect_connection(&active_ifname) {
+                    Ok(_) => Response::Disconnected,
+                    Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
+                }
+            }
 
             Command::Tick => Response::Tick,
             _ => Response::Error("Unknown Command.".into()),
@@ -98,7 +106,7 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
                     continue;
                 }
                 if let Some(content) = files.first() {
-                    if last_read != content.to_owned() {
+                    if last_read != *content {
                         last_read = content.clone();
                         println!("New DHCP Connextion: {:#?}", content);
                     }

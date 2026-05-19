@@ -193,12 +193,17 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
     // create a thread to disconnect completely upon server withdrawal
     let ifindex = *ifindex;
     let ifname = ifname.clone();
+    println!("Spawning thread to look for disconnection");
     thread::spawn(move || {
         // wait for disconnection
+
+        println!("Thread spawned");
         match return_on_disconnect(ifindex as i32) {
             Ok(_) => {
                 println!("Engaging Full Disconnection from {}", ifindex);
-                disconnect(&ifname, false);
+                if let Err(e) = disconnect(&ifname, false) {
+                    eprintln!("Disconnection ERROR: {}", e);
+                };
                 // engage complete disconnection
             }
             Err(e) => {
@@ -229,88 +234,35 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
     if grace {
-        'outer: for _ in 0..5 {
-            let send_socket = UdpSocket::bind("0.0.0.0:68")?;
-            let socket = Socket::new(
-                Domain::PACKET,
-                Type::RAW,
-                Some(Protocol::from(libc::ETH_P_ALL)),
-            )?;
-            send_socket.set_broadcast(true)?;
-            bind_socket_to_device(&send_socket, ifname)?;
-            socket.bind_device(Some(ifname.as_bytes()));
-
-            let sockaddr = create_packet_sockaddr(ifindex);
-            socket.bind(&sockaddr)?;
-            let packet = Packet {
-                reply: false,
-                hops: 0,
-                xid: rand::random(),
-                ciaddr: ip_addr,
-                chaddr: mac,
-                secs: 0,
-                broadcast: true,
-                yiaddr: Ipv4Addr::new(0, 0, 0, 0),
-                siaddr: Ipv4Addr::new(0, 0, 0, 0),
-                giaddr: Ipv4Addr::new(0, 0, 0, 0),
-                options: vec![DhcpOption::DhcpMessageType(MessageType::Release)],
-            };
-            let dest = gateway_ip.to_string() + ":67";
-            let mut buf = [0u8; 1500];
-            let data = packet.encode(&mut buf);
-            send_socket.send_to(data, dest.clone())?;
-
-            let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
-            let mut err: Option<String> = None;
-            loop {
-                if start.elapsed() >= timeout {
-                    break;
-                }
-                match socket.recv(&mut buf) {
-                    Ok(size) => {
-                        let raw_data =
-                            unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
-                        let res_packet = match validate_packet_v2(raw_data, size)? {
-                            Some(s) => {
-                                println!("Packet Successful");
-                                s
-                            }
-                            None => {
-                                println!("Conversion Error");
-                                continue;
-                            }
-                        };
-                        if packet.xid != res_packet.xid {
-                            continue;
-                        }
-                        for option in res_packet.options {
-                            match option {
-                                DhcpOption::DhcpMessageType(val) => match val {
-                                    MessageType::Ack => {
-                                        println!("Server side disconnected successfully");
-                                        break 'outer;
-                                    }
-                                    _ => {}
-                                },
-                                _ => {
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("Disconnection Error: {}", e);
-                        err = Some(e.to_string());
-                    }
-                }
-            }
-            if let Some(e) = err {
-                return Err(e.into());
-            }
-        }
+        println!("Checkout 1");
+        let send_socket = UdpSocket::bind("0.0.0.0:0")?;
+        send_socket.set_broadcast(true)?;
+        bind_socket_to_device(&send_socket, ifname)?;
+        let packet = Packet {
+            reply: false,
+            hops: 0,
+            xid: rand::random(),
+            ciaddr: ip_addr,
+            chaddr: mac,
+            secs: 0,
+            broadcast: false,
+            yiaddr: Ipv4Addr::new(0, 0, 0, 0),
+            siaddr: Ipv4Addr::new(0, 0, 0, 0),
+            giaddr: Ipv4Addr::new(0, 0, 0, 0),
+            options: vec![DhcpOption::DhcpMessageType(MessageType::Release)],
+        };
+        let dest = gateway_ip.to_string() + ":67";
+        let mut buf = [0u8; 1500];
+        let data = packet.encode(&mut buf);
+        println!("Checkout 2");
+        send_socket.send_to(data, dest.clone())?;
+        println!("Checkout 3");
+        println!("Notified Server for Disconnection.");
     }
+    println!("outcheck 1");
     'outer: for _ in 0..5 {
         wpa_skt.send("DISCONNECT".as_bytes())?;
+        println!("outcheck 2");
         let mut recv_buf = [0u8; 4096];
         loop {
             if start.elapsed() >= timeout {

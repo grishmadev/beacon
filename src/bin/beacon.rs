@@ -43,44 +43,29 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
     let (ressx, resrx) = mpsc::channel::<Response>();
     let (cmdsx, cmdrx) = mpsc::channel::<Command>();
 
-    let cmdsx_clone = cmdsx.clone();
+    let ressx_clone = ressx.clone();
     tokio::spawn(async move {
         while let Ok(cmd) = cmdrx.recv() {
-            match cmd {
-                Command::Notification(msg) => {
-                    // let cmdsx_clone = cmdsx_clone.clone();
-                    let ressx_clone = ressx.clone();
-                    thread::spawn(move || {
-                        let delay = 3;
-                        let duration = Duration::from_secs(delay);
-                        let _ = write("disable notifcation in 3 secs".to_string());
-                        thread::sleep(duration);
-                        let _ = ressx_clone.send(Response::ClearNotification);
-                    });
-                    let _ = ressx.send(Response::Notification(msg));
-                }
-                Command::ClearNotification => {
-                    let _ = ressx.send(Response::ClearNotification);
-                }
-                Command::Tick => {
-                    let _ = ressx.send(Response::Tick);
-                }
-                _ => {
-                    let response = match response(&cmd).await {
-                        Ok(r) => r,
-                        Err(e) => Response::Error(e.to_string()),
-                    };
-                    let _ = ressx.send(response);
-                }
-            }
+            let ressx = ressx_clone.clone();
+            tokio::spawn(async move {
+                // match cmd {
+                //     _ => {
+                let response = match response(&cmd).await {
+                    Ok(r) => r,
+                    Err(e) => Response::Error(e.to_string()),
+                };
+                let _ = ressx.send(response);
+                // }
+                // }
+            });
         }
     });
     let cmdsx_clone = cmdsx.clone();
-    spawn(move || {
+    tokio::spawn(async move {
         loop {
             // Scan for active Interfaces every second or so
             let _ = cmdsx_clone.send(Command::Tick);
-            thread::sleep(Duration::from_millis(2000));
+            tokio::time::sleep(Duration::from_millis(2000)).await;
         }
     });
 
@@ -109,6 +94,15 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                     app.set_hosts(hosts, &ifname);
                 }
                 Response::Notification(msg) => {
+                    let ressx_clone = ressx.clone();
+                    tokio::spawn(async move {
+                        let delay = 3;
+                        let duration = Duration::from_secs(delay);
+                        let _ = write("disable notifcation in 3 secs".to_string());
+                        tokio::time::sleep(duration).await;
+                        let _ = ressx_clone.send(Response::ClearNotification);
+                    });
+
                     app.notification = Some(msg);
                 }
                 Response::ClearNotification => {

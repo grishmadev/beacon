@@ -61,26 +61,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
-            match socket.read(&mut buf).await {
-                Ok(0) => {}
-                Ok(n) => {
-                    let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-                    // println!("Command: {:#?}", cmd);
-                    let response = match execute(&cmd).await {
-                        Ok(s) => s,
-                        Err(e) => Response::Error(e.to_string()),
-                    };
-                    // println!("Response: {:#?}", response);
-                    let serialized = bincode::serialize(&response).unwrap();
-                    socket
-                        .write_all(&serialized)
-                        .await
-                        .expect("Couldn't Write to File");
-                }
-                Err(e) => {
-                    eprint!("Socket Error: {}", e);
-                }
-            };
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) => {
+                        break;
+                    }
+                    Ok(n) => {
+                        let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
+                        println!("Command: {:#?}", cmd);
+                        let response = match execute(&cmd).await {
+                            Ok(s) => s,
+                            Err(e) => Response::Error(e.to_string()),
+                        };
+                        println!("Response: {:#?}", response);
+                        let serialized = bincode::serialize(&response).unwrap();
+                        socket
+                            .write_all(&serialized)
+                            .await
+                            .expect("Couldn't Write to File");
+                    }
+                    Err(e) => {
+                        eprint!("Socket Error: {}", e);
+                        break;
+                    }
+                };
+            }
         });
     }
 }
