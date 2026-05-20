@@ -24,14 +24,6 @@ pub struct DhcpFile {
 
 pub struct DhcpStorage;
 impl DhcpStorage {
-    pub fn new() -> Result<(), Box<dyn Error>> {
-        OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(DHCPINFO_PATH)?;
-        Ok(())
-    }
     pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
         if !path.exists() || fs::metadata(path)?.len() == 0 {
@@ -51,10 +43,11 @@ impl DhcpStorage {
             .create(true)
             .truncate(true)
             .write(true)
-            .open(path)?;
-        let serialized = bincode::serialize(&content)?;
-        file.write_all(&serialized)?;
-        file.sync_all()?;
+            .open(path)
+            .unwrap();
+        let serialized = bincode::serialize(&content).unwrap();
+        file.write_all(&serialized).unwrap();
+        file.sync_all().unwrap();
         Ok(())
     }
     pub fn write_from_dhcplease(data: &DhcpLease) -> Result<(), Box<dyn Error>> {

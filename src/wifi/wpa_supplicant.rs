@@ -43,7 +43,7 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
     let ifname = iface.ifname.as_ref().ok_or("Interface Name not found.")?;
     let ifindex = iface.ifindex.as_ref().ok_or("Interface Index not found.")?;
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
-    let client_path = format!("/tmp/beacon_{}", std::process::id());
+    let client_path = format!("/tmp/beacon_wpa_{}", rand::random::<u32>());
 
     // remove client socket if already exists
     let _ = std::fs::remove_file(&client_path);
@@ -162,6 +162,7 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
         }
     }
     skt.shutdown(std::net::Shutdown::Both)?;
+    let _ = fs::remove_file(client_path);
     // Discover packet sent here
     let host_data = discover_host(iface)?;
 
@@ -212,7 +213,9 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
 
 pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
-    let wpa_skt = UnixDatagram::bind(&server_path)?;
+    let client_path = format!("/tmp/beacon_wpa_{}", rand::random::<u32>());
+    let _ = fs::remove_file(&client_path);
+    let wpa_skt = UnixDatagram::bind(&client_path)?;
     println!("Checkpoint 0");
     let ifaces = list_interfaces()?;
     let iface = ifaces
@@ -262,20 +265,24 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         loop {
             // wait for 5 secs to disconnet
             wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-            let size = wpa_skt.recv(&mut recv_buf)?;
-            let event = String::from_utf8_lossy(&recv_buf[..size])
-                .trim()
-                .to_string();
-            if event.contains("CTRL-EVENT-DISCONNECTED") {
-                let _ = DhcpStorage::empty_out();
-                break;
-            };
+            if let Ok(size) = wpa_skt.recv(&mut recv_buf) {
+                let event = String::from_utf8_lossy(&recv_buf[..size])
+                    .trim()
+                    .to_string();
+                println!("wpa: {}", event);
+                if event.contains("OK") || event.contains("CTRL-EVENT-DISCONNECTED") {
+                    let _ = DhcpStorage::empty_out();
+                    break;
+                };
+            }
         }
 
         if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
+            println!("outcheck 3");
             break 'outer;
         };
     }
+    let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
 
     Ok(())
@@ -537,7 +544,6 @@ pub fn request_host_wireless(
                 return Err(e.into());
             }
         }
-        println!("dhcp reesult: {:#?}", result);
         DhcpStorage::write_from_dhcplease(&result)?;
         return Ok(result);
     }

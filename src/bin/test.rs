@@ -48,7 +48,8 @@ async fn main() {
     //         println!("Err: {}", e);
     //     }
     // };
-    let res = response(&Command::ListActiveConnections(interface.clone())).await;
+    // let res = response(&Command::ListActiveConnections(interface.clone())).await;
     // println!("Response: {:#?}", res);
+    let res = list_active_signals(&family_info, interface.clone());
     println!("Hosts: {:#?}", res);
 }
