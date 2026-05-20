@@ -39,7 +39,7 @@ pub enum Command {
     CurrentConnection,
     ListInterfaces,
     Connect {
-        bssid: String,
+        host: Host,
         password: Option<String>,
         iface: Interface,
     },

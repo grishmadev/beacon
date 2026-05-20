@@ -182,9 +182,9 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 
     let mut recv_buffer = [0u8; 4096 * 16];
 
-    loop {
-        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
-        let mut cursor = Cursor::new(&recv_buffer[..size]);
+    let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+    let mut cursor = Cursor::new(&recv_buffer[..size]);
+    while cursor.position() < size as u64 {
         let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
         if let NlPayload::Err(e) = res.nl_payload() {
@@ -192,95 +192,92 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
         }
 
         if *res.nl_type() == libc::NLMSG_DONE as u16 {
-            return Ok(result);
+            // return Ok(result);
+            continue;
         }
 
         if let NlPayload::Payload(genl) = res.nl_payload() {
             let attrs = genl.attrs();
 
             for attr in attrs.iter() {
-                if Nl80211Attr::from(*attr.nla_type().nla_type()) == Nl80211Attr::AttrBss {
+                let typ = Nl80211Attr::from(*attr.nla_type().nla_type());
+                if typ == Nl80211Attr::AttrBss {
                     let bss_bytes = attr.nla_payload().as_ref();
 
-                    let mut cursor = Cursor::new(bss_bytes);
+                    let mut bss_cursor = Cursor::new(bss_bytes);
                     // parsing the nested byte as a flatlsit
                     // initialize Host
+                    let mut target = Host::new();
 
-                    while cursor.position() < bss_bytes.len() as u64 {
-                        let mut target = Host::new();
-                        while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut cursor) {
-                            match Nl80211Bss::from(*nested.nla_type().nla_type()) {
-                                Nl80211Bss::BssBssid => {
-                                    let bytes = nested.nla_payload().as_ref();
-                                    // Mac Address
-                                    if bytes.len() >= 6 {
-                                        let mac = bytes[..6]
-                                            .iter()
-                                            .map(|b| format!("{b:02X}"))
-                                            .collect::<Vec<_>>()
-                                            .join(":");
-                                        target.set_bssid(mac);
-                                    }
+                    while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut bss_cursor) {
+                        match Nl80211Bss::from(*nested.nla_type().nla_type()) {
+                            Nl80211Bss::BssBssid => {
+                                let bytes = nested.nla_payload().as_ref();
+                                // Mac Address
+                                if bytes.len() >= 6 {
+                                    let mac = bytes[..6]
+                                        .iter()
+                                        .map(|b| format!("{b:02X}"))
+                                        .collect::<Vec<_>>()
+                                        .join(":");
+                                    target.set_bssid(mac);
                                 }
-
-                                Nl80211Bss::BssFrequency => {
-                                    let bytes = nested.nla_payload().as_ref();
-                                    if bytes.len() >= 4 {
-                                        let freq = u32::from_le_bytes(bytes[..4].try_into()?);
-                                        target.set_frequency(freq);
-                                    }
-                                }
-
-                                Nl80211Bss::BssSignalMbm => {
-                                    let bytes = nested.nla_payload().as_ref();
-                                    if bytes.len() >= 4 {
-                                        // kernel returns milli-dBm
-                                        let signal =
-                                            u32::from_le_bytes(bytes[..4].try_into()?) / 100;
-                                        target.set_signal(signal);
-                                    }
-                                }
-
-                                Nl80211Bss::BssInformationElements => {
-                                    let ies = nested.nla_payload().as_ref();
-                                    let mut i = 0;
-                                    while i + 1 < ies.len() {
-                                        let tag = ies[i];
-                                        let len = ies[i + 1] as usize;
-                                        if i + 2 + len > ies.len() {
-                                            break;
-                                        }
-                                        if tag == 0 {
-                                            let ssid =
-                                                String::from_utf8_lossy(&ies[i + 2..i + 2 + len])
-                                                    .to_string();
-                                            target.set_ssid(ssid);
-                                            // break;
-                                        }
-                                        i += 2 + len;
-                                    }
-                                }
-
-                                Nl80211Bss::BssStatus => {
-                                    let payload = nested.nla_payload().as_ref();
-                                    if payload.len() >= 4 {
-                                        let status = u32::from_le_bytes(payload[..4].try_into()?);
-                                        target.is_connected = status == 1;
-                                    }
-                                }
-
-                                _ => {}
                             }
-                            // println!("results: {:#?}", target);
+
+                            Nl80211Bss::BssFrequency => {
+                                let bytes = nested.nla_payload().as_ref();
+                                if bytes.len() >= 4 {
+                                    let freq = u32::from_le_bytes(bytes[..4].try_into()?);
+                                    target.set_frequency(freq);
+                                }
+                            }
+
+                            Nl80211Bss::BssSignalMbm => {
+                                let bytes = nested.nla_payload().as_ref();
+                                if bytes.len() >= 4 {
+                                    // kernel returns milli-dBm
+                                    let signal = u32::from_le_bytes(bytes[..4].try_into()?) / 100;
+                                    target.set_signal(signal);
+                                }
+                            }
+
+                            Nl80211Bss::BssInformationElements => {
+                                let ies = nested.nla_payload().as_ref();
+                                let mut i = 0;
+                                while i + 1 < ies.len() {
+                                    let tag = ies[i];
+                                    let len = ies[i + 1] as usize;
+                                    if i + 2 + len > ies.len() {
+                                        break;
+                                    }
+                                    if tag == 0 {
+                                        let ssid =
+                                            String::from_utf8_lossy(&ies[i + 2..i + 2 + len])
+                                                .to_string();
+                                        target.set_ssid(ssid);
+                                    }
+                                    i += 2 + len;
+                                }
+                            }
+
+                            Nl80211Bss::BssStatus => {
+                                let payload = nested.nla_payload().as_ref();
+                                if payload.len() >= 4 {
+                                    let status = u32::from_le_bytes(payload[..4].try_into()?);
+                                    target.is_connected = status == 1;
+                                }
+                            }
+
+                            _ => {}
                         }
-                        result.push(target);
-                        // add target to result
                     }
-                    // println!("host: {:#?}", target);
+                    // add target to result
+                    result.push(target);
                 }
             }
         }
     }
+    Ok(result)
 }
 
 pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {

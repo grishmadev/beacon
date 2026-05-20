@@ -186,25 +186,10 @@ impl App {
         None
     }
 
-    pub fn connect(&mut self, sx: &Sender<Command>, bssid: Option<&str>, password: Option<String>) {
-        if bssid.is_none() && self.active_tab != Tab::Hosts {
-            let _ = sx.send(Command::Notification("No Host Selected.".to_string()));
-            return;
-        }
-        let hosts = self.get_hosts();
-        let interfaces = self.get_ifaces();
-        let cmd = if let Some(idx) = self.host_index.selected()
-            && let Some(target_host) = hosts.get(idx)
-            && let Some(iface_idx) = self.iface_index.selected()
-            && let Some(iface) = interfaces.get(iface_idx)
-        {
-            let bssid = if let Some(bssid) = bssid {
-                bssid.to_string()
-            } else {
-                target_host.bssid.clone().unwrap_or_default()
-            };
+    pub fn connect(&mut self, sx: &Sender<Command>, host: Host, password: Option<String>) {
+        let cmd = if let Some(iface) = self.get_current_interface() {
             Command::Connect {
-                bssid,
+                host,
                 password,
                 iface: iface.clone(),
             }
@@ -231,10 +216,8 @@ impl App {
                     self.active_tab = Default::default();
                 }
                 KeyCode::Enter => {
-                    if let Some(cur_host) = self.get_current_host(false)
-                        && let Some(bssid) = cur_host.bssid
-                    {
-                        self.connect(sx, Some(&bssid), Some(self.input_text.clone()));
+                    if let Some(cur_host) = self.get_current_host(false) {
+                        self.connect(sx, cur_host, Some(self.input_text.clone()));
                         self.active_tab = Tab::Interface;
                         self.input_text = String::new();
                     } else {
@@ -249,7 +232,6 @@ impl App {
                         KeyCode::Enter => {
                             let hosts = self.get_hosts();
                             if hosts.iter().find(|h| h.is_connected).is_some() {
-                                println!("Sending Disconnect");
                                 let _ = sx.send(Command::Disconnect);
                             } else {
                                 self.active_tab = Tab::Input;

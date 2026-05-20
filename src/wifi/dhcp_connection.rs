@@ -45,9 +45,7 @@ impl DhcpStorage {
 
     pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
-        if path.exists() {
-            DhcpStorage::empty_out()?;
-        }
+        let _ = DhcpStorage::empty_out();
         content.time_initiated = Utc::now().timestamp();
         let mut file = OpenOptions::new()
             .create(true)
@@ -60,6 +58,7 @@ impl DhcpStorage {
         Ok(())
     }
     pub fn write_from_dhcplease(data: &DhcpLease) -> Result<(), Box<dyn Error>> {
+        println!("dhcp info: {:#?}", data);
         let mut content = DhcpFile {
             ip_addr: data.ip_addr,
             subnet_mask: data.subnet_mask,
@@ -67,7 +66,7 @@ impl DhcpStorage {
             dns_servers: data.dns_servers.to_owned(),
             lease_duration: data.lease_duration,
             server_id: data.server_id,
-            ..Default::default()
+            time_initiated: Utc::now().timestamp(),
         };
         DhcpStorage::write_file(&mut content)?;
         Ok(())
@@ -75,9 +74,7 @@ impl DhcpStorage {
 
     pub fn empty_out() -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
+        let _ = fs::remove_file(path);
         Ok(())
     }
 }

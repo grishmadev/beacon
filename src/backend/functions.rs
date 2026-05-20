@@ -53,24 +53,15 @@ pub fn list_all_signals() -> Result<Vec<Connection>, Box<dyn Error>> {
 }
 
 pub async fn connect_to(
-    family_info: &FamilyInfo,
-    interfaces: &Vec<Interface>,
     iface: &Interface,
-    bssid: &str,
+    host: Host,
     password: &Option<String>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut hosts = vec![];
-    for iface in interfaces {
-        let result = list_active_signals(family_info, iface.clone())?;
-        hosts.extend(result);
-    }
-    let target = hosts
-        .iter()
-        .find(|e| e.bssid.as_deref() == Some(bssid))
-        .ok_or("No such Connection Found.")?;
     let saved_networks = list_all_signals()?;
-    let ssid = target.ssid.as_ref().ok_or("Target SSID missing.")?;
-    let found_password_option = saved_networks.iter().find(|e| &e.ssid == ssid);
+
+    let found_password_option = saved_networks
+        .iter()
+        .find(|e| &e.bssid == host.bssid.as_ref().unwrap());
     let final_password: String;
     match password {
         Some(val) => {
@@ -84,9 +75,10 @@ pub async fn connect_to(
                 return Err("Password not provided. Please provide a password.".into());
             }
         },
-    }
-    let bssid = target.bssid.as_ref().ok_or("Target BSSID missing.")?;
-    match connect(iface, ssid, &final_password).await {
+    };
+    let bssid = host.bssid.expect("No BSSID found.");
+    let ssid = host.ssid.expect("Target SSID missing.");
+    match connect(iface, &ssid, &final_password).await {
         Ok(_) => {
             // saving connection
             let connection = Connection {

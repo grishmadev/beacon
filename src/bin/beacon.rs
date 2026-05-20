@@ -48,15 +48,26 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         while let Ok(cmd) = cmdrx.recv() {
             let ressx = ressx_clone.clone();
             tokio::spawn(async move {
-                // match cmd {
-                //     _ => {
-                let response = match response(&cmd).await {
-                    Ok(r) => r,
-                    Err(e) => Response::Error(e.to_string()),
-                };
-                let _ = ressx.send(response);
-                // }
-                // }
+                match cmd {
+                    Command::Notification(msg) => {
+                        let ressx_clone = ressx.clone();
+                        tokio::spawn(async move {
+                            let delay = 3;
+                            let duration = Duration::from_secs(delay);
+                            let _ = write("disable notifcation in 3 secs".to_string());
+                            tokio::time::sleep(duration).await;
+                            let _ = ressx_clone.send(Response::ClearNotification);
+                        });
+                        let _ = ressx.send(Response::Notification(msg));
+                    }
+                    _ => {
+                        let response = match response(&cmd).await {
+                            Ok(r) => r,
+                            Err(e) => Response::Error(e.to_string()),
+                        };
+                        let _ = ressx.send(response);
+                    }
+                }
             });
         }
     });
@@ -94,15 +105,6 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                     app.set_hosts(hosts, &ifname);
                 }
                 Response::Notification(msg) => {
-                    let ressx_clone = ressx.clone();
-                    tokio::spawn(async move {
-                        let delay = 3;
-                        let duration = Duration::from_secs(delay);
-                        let _ = write("disable notifcation in 3 secs".to_string());
-                        tokio::time::sleep(duration).await;
-                        let _ = ressx_clone.send(Response::ClearNotification);
-                    });
-
                     app.notification = Some(msg);
                 }
                 Response::ClearNotification => {

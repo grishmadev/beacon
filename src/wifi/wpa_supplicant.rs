@@ -134,7 +134,7 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
     let mut recv_buffer = [0u8; 1024 * 4];
 
     loop {
-        skt.set_read_timeout(Some(std::time::Duration::from_secs(100)))?;
+        skt.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
 
         match skt.recv(&mut recv_buffer) {
             Ok(size) => {
@@ -155,26 +155,22 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
                     if event.contains("reason=WRONG_KEY") {
                         return Err(format!("wpa_supplicant: {}", event).into());
                     }
-                    print!("wpa_supplicant: {}", event);
                     continue;
                 }
             }
             Err(_) => return Err("connection timed out after 10 secs.".into()),
         }
     }
+    skt.shutdown(std::net::Shutdown::Both)?;
     // Discover packet sent here
     let host_data = discover_host(iface)?;
-    // cwrite(format!("host data: {:#?}", host_data));
 
-    // if let Some(offer) = &host_data.offer {
     // Request packet sent here
     if let Some(ip_addr) = host_data.ip_addr {
-        let data = request_host_wireless(iface, ip_addr, host_data.server_id)?;
-        DhcpStorage::write_from_dhcplease(&data)?;
+        request_host_wireless(iface, ip_addr, host_data.server_id)?;
     } else {
         return Err("Failed to get ip address from dhcp server.".into());
     }
-    // }
 
     let (connection, handle, _) = new_connection()?;
 
@@ -215,10 +211,9 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
 }
 
 pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
-    let start = Instant::now();
-    let timeout = Duration::from_secs(5);
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
     let wpa_skt = UnixDatagram::bind(&server_path)?;
+    println!("Checkpoint 0");
     let ifaces = list_interfaces()?;
     let iface = ifaces
         .iter()
@@ -251,7 +246,7 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
             giaddr: Ipv4Addr::new(0, 0, 0, 0),
             options: vec![DhcpOption::DhcpMessageType(MessageType::Release)],
         };
-        let dest = gateway_ip.to_string() + ":67";
+        let dest = gateway_ip.to_string() + ":255";
         let mut buf = [0u8; 1500];
         let data = packet.encode(&mut buf);
         println!("Checkout 2");
@@ -265,9 +260,6 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         println!("outcheck 2");
         let mut recv_buf = [0u8; 4096];
         loop {
-            if start.elapsed() >= timeout {
-                continue 'outer;
-            }
             // wait for 5 secs to disconnet
             wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
             let size = wpa_skt.recv(&mut recv_buf)?;
@@ -419,7 +411,6 @@ pub fn request_host_wireless(
 
     // message type requesst
     options.push(DhcpOption::DhcpMessageType(MessageType::Request));
-    // cwrite(format!("offered ip address: {:?}", offer.yiaddr));
 
     // requested ip address (optins 50)
     options.push(DhcpOption::RequestedIpAddress(current_ip));
@@ -490,7 +481,6 @@ pub fn request_host_wireless(
             Ok(size) => {
                 // let raw_data = &buf[..size];
                 let raw_data = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
-                println!("Raw data: {:?}", raw_data);
                 let packet = match validate_packet_v2(raw_data, size)? {
                     Some(s) => {
                         println!("Packet successful");
@@ -505,10 +495,6 @@ pub fn request_host_wireless(
                 if packet.xid != request_packet.xid {
                     continue;
                 }
-                println!(
-                    "packet recieved: {:#?}, packet expected: {:#?}",
-                    packet.xid, request_packet.xid
-                );
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
@@ -537,17 +523,23 @@ pub fn request_host_wireless(
                     }
                 }
                 result.offer = Some(request_packet);
-                return Ok(result);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 println!("WouldBlock Error");
                 continue;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                println!("Connection already exists, proceeding safely..");
+                break;
             }
             Err(e) => {
                 print!("Error, {}", e);
                 return Err(e.into());
             }
         }
+        println!("dhcp reesult: {:#?}", result);
+        DhcpStorage::write_from_dhcplease(&result)?;
+        return Ok(result);
     }
     Err("Exited".into())
 }
@@ -654,14 +646,12 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
             }
             match socket.recv_from(&mut res_buf) {
                 Ok((size, _)) => {
-                    println!("Recieved.");
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
                     let packet = match validate_packet_v2(initialized_data, size)? {
                         Some(s) => s,
                         None => {
-                            println!("No Packet Found.");
                             continue;
                         }
                     };
@@ -841,6 +831,7 @@ pub fn request_host_wired(
                     }
                 }
                 lease.offer = Some(msg);
+                DhcpStorage::write_from_dhcplease(&lease)?;
                 return Ok(lease);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {

@@ -1,6 +1,6 @@
 use beacon::{
     Command,
-    backend::functions::list_interfaces,
+    backend::functions::{list_active_signals, list_interfaces},
     executer::response,
     wifi::{
         helper::{
@@ -49,5 +49,6 @@ async fn main() {
     //     }
     // };
     let res = response(&Command::ListActiveConnections(interface.clone())).await;
-    println!("Response: {:#?}", res);
+    // println!("Response: {:#?}", res);
+    println!("Hosts: {:#?}", res);
 }

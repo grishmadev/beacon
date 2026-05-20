@@ -53,20 +53,16 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
             Command::Notification(msg) => Response::Notification(msg.to_owned()),
             Command::ClearNotification => Response::ClearNotification,
             Command::Connect {
-                bssid,
+                host,
                 iface,
                 password,
-            } => {
-                let interfaces = get_interfaces()?;
-                let family_info = get_family_info()?;
-                match connect_to(&family_info, &interfaces, iface, bssid, password).await {
-                    Ok(_) => {
-                        manage_lease_thread(iface)?;
-                        Response::Connected
-                    }
-                    Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
+            } => match connect_to(iface, host.clone(), password).await {
+                Ok(_) => {
+                    manage_lease_thread(iface)?;
+                    Response::Connected
                 }
-            }
+                Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
+            },
             Command::CurrentConnection => match current_connection() {
                 Ok(curcon) => Response::CurrentConnection(curcon),
                 Err(err) => Response::Error(err.to_string()),
