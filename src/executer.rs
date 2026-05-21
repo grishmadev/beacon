@@ -57,10 +57,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 iface,
                 password,
             } => match connect_to(iface, host.clone(), password).await {
-                Ok(_) => {
-                    manage_lease_thread(iface)?;
-                    Response::Connected
-                }
+                Ok(_) => Response::Connected,
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             },
             Command::CurrentConnection => match current_connection() {
@@ -89,52 +86,6 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
         }
     }
     Ok(response)
-}
-
-pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
-    let iface = iface.clone();
-    tokio::spawn(async move {
-        let mut last_read = DhcpFile::default();
-        loop {
-            let info = DhcpStorage::read_file();
-            if let Ok(files) = info {
-                if files.is_empty() {
-                    continue;
-                }
-                if let Some(content) = files.first() {
-                    if last_read != *content {
-                        last_read = content.clone();
-                        println!("New DHCP Connextion: {:#?}", content);
-                    }
-                    let time_init = content.time_initiated;
-                    let ls_dur = content.lease_duration as i64;
-                    manage_lease(&iface, time_init, ls_dur);
-                }
-            } else {
-                break;
-            }
-        }
-    });
-
-    Ok(())
-}
-
-fn manage_lease(iface: &Interface, time_init: i64, ls_dur: i64) {
-    let now = Utc::now();
-    let t1 = ls_dur / 2;
-    let t2 = ls_dur as f64 * 0.875;
-    let time_left = Utc.timestamp_opt(ls_dur + time_init, 0).single().unwrap() - now;
-    let time_left = time_left.num_seconds();
-    let data = if time_left + t2 as i64 <= ls_dur {
-        renew_connection(iface, true)
-    } else if time_left + t1 <= ls_dur {
-        renew_connection(iface, false)
-    } else {
-        Err("Nothing happened.".into())
-    };
-    if let Ok(Some(data)) = data {
-        let _ = DhcpStorage::write_from_dhcplease(&data);
-    };
 }
 
 pub async fn response(cmd: &Command) -> Result<Response, Box<dyn Error>> {

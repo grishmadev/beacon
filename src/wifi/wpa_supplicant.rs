@@ -35,8 +35,9 @@ use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::helper::{
     add_addr, create_packet_sockaddr, generate_client_id, get_current_ip, get_gateway_ip,
-    get_iface_mac, get_interfaces, remove_lease_and_gateway_ip, return_on_disconnect,
-    set_default_route, set_iface_up, setup_iface, validate_packet, validate_packet_v2,
+    get_iface_mac, get_interfaces, manage_lease_thread, remove_lease_and_gateway_ip,
+    return_on_disconnect, set_default_route, set_iface_up, setup_iface, validate_packet,
+    validate_packet_v2,
 };
 
 pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
@@ -151,11 +152,8 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
                     return Err("Authentication failed. Try Again.".into());
                 } else if event.contains("CTRL-EVENT-NETWORK-NOT-FOUND") {
                     return Err("Network not found, Make sure host is in range.".into());
-                } else if event.contains("CTRL-EVENT-SSID-TEMP-DISABLED") {
-                    if event.contains("reason=WRONG_KEY") {
-                        return Err(format!("wpa_supplicant: {}", event).into());
-                    }
-                    continue;
+                } else if event.contains("WRONG_KEY") {
+                    return Err("Incorrect Password. Please try again.".into());
                 }
             }
             Err(_) => return Err("connection timed out after 10 secs.".into()),
@@ -191,10 +189,9 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
     let ifindex = *ifindex;
     let ifname = ifname.clone();
     println!("Spawning thread to look for disconnection");
-    thread::spawn(move || {
+    tokio::spawn(async move {
         // wait for disconnection
 
-        println!("Thread spawned");
         match return_on_disconnect(ifindex as i32) {
             Ok(_) => {
                 println!("Engaging Full Disconnection from {}", ifindex);
@@ -208,6 +205,13 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
             }
         };
     });
+
+    /*
+     * This is for managing the lease connection in a separate thread
+     * i.e: rebinding leaase
+     */
+    manage_lease_thread(iface)?;
+    println!("spawned manager");
     Ok(())
 }
 
@@ -216,7 +220,6 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     let client_path = format!("/tmp/beacon_wpa_{}", rand::random::<u32>());
     let _ = fs::remove_file(&client_path);
     let wpa_skt = UnixDatagram::bind(&client_path)?;
-    println!("Checkpoint 0");
     let ifaces = list_interfaces()?;
     let iface = ifaces
         .iter()
@@ -232,7 +235,6 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
     if grace {
-        println!("Checkout 1");
         let send_socket = UdpSocket::bind("0.0.0.0:0")?;
         send_socket.set_broadcast(true)?;
         bind_socket_to_device(&send_socket, ifname)?;
@@ -252,24 +254,23 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         let dest = gateway_ip.to_string() + ":255";
         let mut buf = [0u8; 1500];
         let data = packet.encode(&mut buf);
-        println!("Checkout 2");
         send_socket.send_to(data, dest.clone())?;
-        println!("Checkout 3");
         println!("Notified Server for Disconnection.");
     }
-    println!("outcheck 1");
-    'outer: for _ in 0..5 {
-        wpa_skt.send("DISCONNECT".as_bytes())?;
-        println!("outcheck 2");
+    'outer: for _ in 0..20 {
         let mut recv_buf = [0u8; 4096];
+        let start = Instant::now();
+        let timeout = Duration::from_secs(5);
+        wpa_skt.send("DISCONNECT".as_bytes())?;
         loop {
+            if start.elapsed() >= timeout {
+                continue 'outer;
+            }
             // wait for 5 secs to disconnet
             wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
             if let Ok(size) = wpa_skt.recv(&mut recv_buf) {
-                let event = String::from_utf8_lossy(&recv_buf[..size])
-                    .trim()
-                    .to_string();
-                println!("wpa: {}", event);
+                let event = String::from_utf8_lossy(&recv_buf[..size]).to_string();
+                println!("wpa_supplicant: {}", event);
                 if event.contains("OK") || event.contains("CTRL-EVENT-DISCONNECTED") {
                     let _ = DhcpStorage::empty_out();
                     break;
@@ -278,8 +279,7 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         }
 
         if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
-            println!("outcheck 3");
-            break 'outer;
+            break;
         };
     }
     let _ = fs::remove_file(client_path);
@@ -544,7 +544,7 @@ pub fn request_host_wireless(
                 return Err(e.into());
             }
         }
-        DhcpStorage::write_from_dhcplease(&result)?;
+        DhcpStorage::write_from_dhcplease(&result, ifname.clone())?;
         return Ok(result);
     }
     Err("Exited".into())
@@ -837,7 +837,7 @@ pub fn request_host_wired(
                     }
                 }
                 lease.offer = Some(msg);
-                DhcpStorage::write_from_dhcplease(&lease)?;
+                DhcpStorage::write_from_dhcplease(&lease, ifname)?;
                 return Ok(lease);
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -856,7 +856,7 @@ pub fn request_host_wired(
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
     let ifindex = iface.ifindex.as_ref().unwrap();
-    // let ifname = iface.ifname.as_ref().unwrap();
+    let ifname = iface.ifname.as_ref().unwrap();
     // let mac = iface.mac.as_ref().unwrap();
     set_iface_up(*ifindex as i32)?;
     println!("CHeckpoint 1");
@@ -870,9 +870,9 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     {
         let mac_address = offer.chaddr;
 
-        let mut edata = request_host_wired(mac_address, current_ip, server_id, false)?;
+        let edata = request_host_wired(mac_address, current_ip, server_id, false)?;
         println!("Ethernet: {:#?}", edata);
-        DhcpStorage::write_from_dhcplease(&edata)?;
+        DhcpStorage::write_from_dhcplease(&edata, ifname.to_string())?;
         add_addr(*ifindex, current_ip)?;
         set_default_route(*ifindex, server_id)?;
         set_dns(edata.dns_servers)?;

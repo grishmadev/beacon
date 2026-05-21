@@ -7,19 +7,22 @@ use std::{
     os::unix::net::UnixStream,
 };
 
-pub fn command(cmd: Command) -> Result<Response, Box<dyn Error>> {
-    let mut socket = UnixStream::connect(SOCKET_PATH)?;
-
-    write(format!("Command sent: {:?}", cmd));
-    let serialized = bincode::serialize(&cmd)?;
-    socket.write_all(&serialized)?;
-
-    let mut buf = [0; 1024];
-    let n = socket.read(&mut buf)?;
-    let response: Response = bincode::deserialize(&buf[..n])?;
-
-    write(format!("Response: {:#?}", response));
-    Ok(response)
+pub fn sigrate_to_bars(sigrate: i32) -> String {
+    let sigrate = -sigrate;
+    let bar = if sigrate < 30 {
+        "BEST"
+    } else if sigrate >= 30 && sigrate <= 50 {
+        "||||||||"
+    } else if sigrate > 50 && sigrate <= 60 {
+        "||||||"
+    } else if sigrate > 60 && sigrate <= 67 {
+        "||||"
+    } else if sigrate > 70 && sigrate <= 80 {
+        "|||"
+    } else if sigrate > 80 && sigrate <= 90 {
+        "||"
+    } else {
+        "---"
+    };
+    bar.to_string()
 }
-
-// pub fn handle_keys(cmd)

@@ -8,7 +8,10 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, Paragraph, Row, Table},
 };
 
-use crate::frontend::app::{App, Tab};
+use crate::frontend::{
+    app::{App, Tab},
+    sigrate_to_bars,
+};
 
 pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     let size = rect.area();
@@ -79,6 +82,10 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         let mut add_attr = |l: &str, r: &str| {
             current_connection_list.push(format!("{:<20}: {:>15}", l, r));
         };
+        if let Some(ssid) = curcon.ssid {
+            add_attr("Host Name", &ssid.to_string());
+        }
+        add_attr("Interface", curcon.ifname.as_ref().unwrap());
         if let Some(ip) = curcon.ip_addr {
             add_attr("IP", &ip.to_string());
         }
@@ -95,22 +102,22 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
             add_attr("Gateway", &gateway.to_string());
         }
         if let Some(freq) = curcon.frequency {
-            add_attr("Frequency", &freq.to_string());
+            add_attr("Frequency", &format!("{} MHz", freq));
         }
         let time_left = Utc
             .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
             .single()
             .unwrap()
             - Utc::now();
-        add_attr("Time Left", &format!("{}s", time_left.num_seconds()));
-        add_attr(
-            "Renewal Time",
-            &(curcon.lease_duration as f32 / 2.0).to_string(),
-        );
-        add_attr(
-            "Rebinding Time",
-            &(curcon.lease_duration as f32 * 0.875).to_string(),
-        );
+        add_attr("Time Left", &format!("{} s", time_left.num_seconds()));
+        // add_attr(
+        //     "Renewal Time",
+        //     &(curcon.lease_duration as f32 / 2.0).to_string(),
+        // );
+        // add_attr(
+        //     "Rebinding Time",
+        //     &(curcon.lease_duration as f32 * 0.875).to_string(),
+        // );
 
         let current_connection = List::new(current_connection_list).block(
             Block::default()
@@ -121,7 +128,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     }
 
     let hosts_vec = app.get_hosts();
-    let host_header = Row::new(vec!["SSID", "BSSID", "FREQUENCY", "SIGRATE", "CONNECTED"])
+    let host_header = Row::new(vec!["SSID", "BSSID", "FREQUENCY", "STRENGTH", "CONNECTED"])
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -134,9 +141,9 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         let connected = if f.is_connected { "YES" } else { "NO" }.to_string();
         let bssid = f.bssid.clone().unwrap_or("--".to_string());
         let freq = f.frequency.unwrap_or_default().to_string();
-        let signal = f.signal.unwrap_or_default().to_string();
+        let strength = sigrate_to_bars(f.signal.unwrap_or_default());
 
-        Row::new(vec![ssid, bssid, freq, signal, connected])
+        Row::new(vec![ssid, bssid, freq, strength, connected])
     });
 
     let host_count = if hosts_vec.is_empty() {

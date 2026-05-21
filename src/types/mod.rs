@@ -8,7 +8,7 @@ pub struct Host {
     pub bssid: Option<String>,
     pub ssid: Option<String>,
     pub frequency: Option<u32>,
-    pub signal: Option<u32>,
+    pub signal: Option<i32>,
     pub is_connected: bool,
 }
 
@@ -35,7 +35,7 @@ impl Host {
         self.frequency = Some(frequency);
     }
 
-    pub fn set_signal(&mut self, signal: u32) {
+    pub fn set_signal(&mut self, signal: i32) {
         self.signal = Some(signal);
     }
 }

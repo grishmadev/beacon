@@ -1,9 +1,10 @@
 use crate::mac_to_bytes;
 use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
-use crate::wifi::dhcp_connection::DhcpStorage;
+use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
 use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
+use chrono::{DateTime, MappedLocalTime, TimeZone, Utc};
 use dhcp4r::packet::Packet;
 use libc::{AF_NETLINK, NETLINK_ROUTE, RTM_DELADDR, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
 use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, RtmF, Rtn, Rtprot};
@@ -32,6 +33,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
+use std::thread;
 use std::{error::Error, io::Cursor, path::Path};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
@@ -236,7 +238,7 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                                 let bytes = nested.nla_payload().as_ref();
                                 if bytes.len() >= 4 {
                                     // kernel returns milli-dBm
-                                    let signal = u32::from_le_bytes(bytes[..4].try_into()?) / 100;
+                                    let signal = i32::from_le_bytes(bytes[..4].try_into()?) / 100;
                                     target.set_signal(signal);
                                 }
                             }
@@ -419,6 +421,10 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                         let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
                         connection.ifindex = Some(ifindex);
                     }
+                    Nl80211Attr::AttrSsid => {
+                        let ssid = String::from_utf8_lossy(payload).to_string();
+                        println!("ssid: {}", ssid);
+                    }
 
                     _ => {}
                 }
@@ -439,7 +445,6 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 && let Ok(files) = DhcpStorage::read_file()
                 && let Some(edata) = files.first()
             {
-                // let extra_data = request_host(mac_to_bytes(&mac), ip, gateway, true)?;
                 connection.ip_addr = Some(ip);
                 connection.subnet_mask = edata.subnet_mask;
                 connection.gateway = Some(gateway);
@@ -447,7 +452,6 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 connection.server_id = edata.server_id;
                 connection.lease_duration = edata.lease_duration;
                 connection.time_initiated = edata.time_initiated;
-                println!("connection :{:#?}", connection);
             }
             return Ok(Some(connection));
         }
@@ -941,4 +945,81 @@ pub fn remove_lease_and_gateway_ip(
     wait_for_ack(&socket)?;
 
     Ok(())
+}
+
+// This is for managing the lease connection in a separate thread
+// i.e: rebinding leaase
+pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
+    let iface = iface.clone();
+    thread::spawn(move || {
+        let mut last_read = DhcpFile::default();
+        let mut unicast_renewed = false;
+        let mut broadcast_renewed = false;
+        loop {
+            let info = DhcpStorage::read_file();
+            if let Ok(files) = info {
+                if files.is_empty() {
+                    continue;
+                }
+                let ifname = iface.ifname.as_ref().unwrap().to_string();
+                if let Some(content) = files.iter().find(|f| f.ifname == ifname) {
+                    if last_read != *content {
+                        last_read = content.clone();
+                        println!("New DHCP Connection: {:#?}", content);
+                    }
+                    // actual absolute time the DhcpFile was initiated at
+                    let time_init = content.time_initiated;
+
+                    // duration of the lease lifetime
+                    let ls_dur = content.lease_duration as i64;
+                    loop {
+                        manage_lease(
+                            &iface,
+                            time_init,
+                            ls_dur,
+                            &mut unicast_renewed,
+                            &mut broadcast_renewed,
+                        );
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn manage_lease(
+    iface: &Interface,
+    time_init: i64,
+    ls_dur: i64,
+    uni_ren: &mut bool,
+    brd_ren: &mut bool,
+) {
+    let now = Utc::now();
+    let t1 = ls_dur / 2;
+    let t2 = ls_dur as f64 * 0.875;
+    let time_left = now.timestamp() - time_init;
+
+    let ifname = iface.ifname.as_ref().expect("No Ifname found.").to_string();
+
+    let data = {
+        if time_left > t1 && time_left < t2 as i64 && !*uni_ren {
+            *uni_ren = true;
+            *brd_ren = false;
+            renew_connection(iface, false)
+        } else if time_left > t2 as i64 && !*brd_ren {
+            *uni_ren = false;
+            *brd_ren = true;
+            renew_connection(iface, true)
+        } else {
+            Err("Nothing happened.".into())
+        }
+    };
+
+    if let Ok(Some(data)) = data {
+        let _ = DhcpStorage::write_from_dhcplease(&data, ifname);
+    };
 }

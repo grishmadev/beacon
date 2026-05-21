@@ -1,7 +1,15 @@
 use beacon::{
-    Command, Response, backend::functions::list_interfaces, executer::execute, mac_to_bytes,
-    types::InterfaceType, wifi::wpa_supplicant::connect_via_ethernet,
+    Command, Response,
+    backend::functions::list_interfaces,
+    executer::execute,
+    mac_to_bytes,
+    types::InterfaceType,
+    wifi::{
+        dhcp_connection::DhcpStorage, helper::manage_lease_thread,
+        wpa_supplicant::connect_via_ethernet,
+    },
 };
+use chrono::Utc;
 use std::{
     error::Error,
     fs,
@@ -28,7 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let connected_via_ether = Arc::new(AtomicBool::new(false));
     let status_clone = Arc::clone(&connected_via_ether);
-    thread::spawn(move || {
+    tokio::spawn(async move {
         loop {
             let is_connected = status_clone.load(Ordering::SeqCst);
             let ifaces = list_interfaces().unwrap_or_default();
@@ -48,9 +56,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 _ => {}
             }
-            thread::sleep(Duration::from_secs(2));
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
+
+    // Spawning thread to check for residue leases and manage them
+    tokio::spawn(async move {
+        println!("Checking for previous lease");
+        let files = DhcpStorage::read_file().unwrap();
+        let interfaces = list_interfaces().unwrap();
+        if files.is_empty() {
+            println!("No DhcpLease found.");
+            return;
+        };
+        println!("Found Residue Dhcp");
+        let file = files.first().unwrap();
+        if file.time_initiated + file.lease_duration as i64 <= Utc::now().timestamp() {
+            println!("Found Invalid Dhcp");
+            let _ = DhcpStorage::empty_out();
+            return;
+        };
+        let iface = interfaces
+            .iter()
+            .find(|f| f.ifname.as_ref().unwrap() == &file.ifname)
+            .unwrap();
+        println!("Spawned Thread management for current DhcpLease");
+        let _ = manage_lease_thread(iface);
+    });
+
     let listener = UnixListener::bind(SOCKET_PATH).unwrap();
     loop {
         let (mut socket, _) = match listener.accept().await {
@@ -68,12 +101,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     Ok(n) => {
                         let cmd: Command = bincode::deserialize(&buf[..n]).unwrap();
-                        println!("Command: {:#?}", cmd);
                         let response = match execute(&cmd).await {
                             Ok(s) => s,
                             Err(e) => Response::Error(e.to_string()),
                         };
-                        println!("Response: {:#?}", response);
                         let serialized = bincode::serialize(&response).unwrap();
                         socket
                             .write_all(&serialized)
