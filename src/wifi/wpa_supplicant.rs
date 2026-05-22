@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::{self, write};
@@ -6,13 +5,11 @@ use std::io::{self, Cursor};
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
-use std::os::raw;
 use std::os::unix::net::UnixDatagram;
-use std::process::Command;
 use std::time::{Duration, Instant};
 use std::{slice, thread};
 
-use dhcp4r::options::{DhcpOption, MessageType, RawDhcpOption};
+use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
 use etherparse::PacketBuilder;
 use neli::attr::Attribute;
@@ -26,7 +23,7 @@ use neli::types::RtBuffer;
 use neli::utils::Groups;
 use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
-use socket2::{Domain, Protocol, SockAddr, SockAddrStorage, Socket, Type, sa_family_t};
+use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::backend::functions::list_interfaces;
 use crate::debug::write as cwrite;
@@ -210,7 +207,7 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
      * This is for managing the lease connection in a separate thread
      * i.e: rebinding leaase
      */
-    manage_lease_thread(iface)?;
+    let _ = manage_lease_thread(iface);
     println!("spawned manager");
     Ok(())
 }
@@ -228,12 +225,32 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .to_owned();
     let ifindex = iface.ifindex.expect("Coudldn't parse Ifindex.");
     let mac = mac_to_bytes(&iface.mac.expect("Couldn't parse mac."));
+
     let ip_addr = get_current_ip()?.ok_or("No Current IP found.")?;
-    let prefix_len = 24;
+    let prefix_len = 32;
+
     let gateway_ip = get_gateway_ip().expect("Gateway IP not found.");
+
     wpa_skt
         .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
+
+    let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
+        wpa_skt.send(cmd.as_bytes())?;
+
+        let mut buf = [0u8; 1024 * 4];
+        while let Ok(size) = wpa_skt.recv(&mut buf) {
+            let reply = String::from_utf8_lossy(buf[..size].into())
+                .trim()
+                .to_string();
+            if reply.starts_with('<') {
+                continue;
+            }
+            println!("result: {}", reply);
+            return Ok(reply);
+        }
+        Ok("FAIL".to_string())
+    };
     if grace {
         let send_socket = UdpSocket::bind("0.0.0.0:0")?;
         send_socket.set_broadcast(true)?;
@@ -257,31 +274,43 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         send_socket.send_to(data, dest.clone())?;
         println!("Notified Server for Disconnection.");
     }
-    'outer: for _ in 0..20 {
-        let mut recv_buf = [0u8; 4096];
-        let start = Instant::now();
-        let timeout = Duration::from_secs(5);
-        wpa_skt.send("DISCONNECT".as_bytes())?;
-        loop {
-            if start.elapsed() >= timeout {
-                continue 'outer;
-            }
-            // wait for 5 secs to disconnet
-            wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-            if let Ok(size) = wpa_skt.recv(&mut recv_buf) {
-                let event = String::from_utf8_lossy(&recv_buf[..size]).to_string();
-                println!("wpa_supplicant: {}", event);
-                if event.contains("OK") || event.contains("CTRL-EVENT-DISCONNECTED") {
-                    let _ = DhcpStorage::empty_out();
-                    break;
-                };
-            }
-        }
-
-        if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
-            break;
-        };
+    // 'outer: for _ in 0..20 {
+    // let mut recv_buf = [0u8; 4096];
+    // let start = Instant::now();
+    // let timeout = Duration::from_secs(5);
+    if send_cmd("PING")? != "PONG" {
+        return Err("wpa_supplicant did not respond.".into());
     }
+
+    if send_cmd("ATTACH")? != "OK" {
+        return Err("Couldn't connect to wpa_supplicant.".into());
+    }
+
+    send_cmd("DISCONNECT")?;
+    // loop {
+    //     if start.elapsed() >= timeout {
+    //         continue 'outer;
+    //     }
+    //     // wait for 5 secs to disconnet
+    //     wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    //     if let Ok(size) = wpa_skt.recv(&mut recv_buf) {
+    //         let event = String::from_utf8_lossy(&recv_buf[..size]).to_string();
+    //         println!("wpa_supplicant: {}", event);
+    //         if event.contains("OK") || event.contains("CTRL-EVENT-DISCONNECTED") {
+    //             let _ = DhcpStorage::empty_out();
+    //             break;
+    //         };
+    //     }
+    // }
+    // if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
+    //     break;
+    // };
+    // }
+    println!("Removing lease and gateway IP");
+    thread::spawn(move || {
+        remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
+    });
+    println!("Removed Lease IP");
     let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
 
@@ -790,11 +819,9 @@ pub fn request_host_wired(
             Ok(size) => {
                 let raw_data =
                     unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
-                println!("Raw data: {:?}", raw_data);
                 let packet = match validate_packet_v2(raw_data, size)? {
                     Some(s) => {
                         println!("Packet successful");
-                        println!("recieved options: {:#?}", s.options);
                         s
                     }
                     None => {
@@ -805,10 +832,6 @@ pub fn request_host_wired(
                 if packet.xid != msg.xid {
                     continue;
                 }
-                println!(
-                    "packet recieved: {:#?}, packet expected: {:#?}",
-                    packet.xid, msg.xid
-                );
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {

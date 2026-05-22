@@ -1,7 +1,6 @@
 use std::error::Error;
 
 use crate::{
-    mac_to_bytes,
     types::{Connection, CurrentConnection, FamilyInfo, Host, Interface, InterfaceType},
     wifi::{
         helper::{get_current, get_family_info, get_interfaces, get_scan, trigger_scan},

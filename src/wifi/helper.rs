@@ -1,15 +1,20 @@
+use crate::backend::functions::{connect_to, list_active_signals};
 use crate::mac_to_bytes;
-use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
+use crate::types::{
+    Connection, CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType,
+};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
+use crate::wifi::history::list_saved_networks;
 use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
 use chrono::{DateTime, MappedLocalTime, TimeZone, Utc};
 use dhcp4r::packet::Packet;
 use libc::{AF_NETLINK, NETLINK_ROUTE, RTM_DELADDR, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
-use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtaType, RtmF, Rtn, Rtprot};
+use neli::consts::nl::Nlmsg;
+use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtmF, Rtn, Rtprot};
 use neli::err::Nlmsgerr;
-use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Rtattr, RtattrBuilder, RtmsgBuilder};
+use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, RtattrBuilder, RtmsgBuilder};
 use neli::socket::synchronous::NlSocketHandle;
 use neli::types::RtBuffer;
 use neli::{
@@ -34,6 +39,7 @@ use std::io::{self, Read, Write};
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::thread;
+use std::time::Duration;
 use std::{error::Error, io::Cursor, path::Path};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
@@ -887,23 +893,29 @@ pub fn remove_lease_and_gateway_ip(
     let mut cmd_buf = Cursor::new(Vec::new());
     nlmsg.to_bytes(&mut cmd_buf)?;
     socket.send(cmd_buf.get_ref(), Msg::empty())?;
+    println!("Removing...");
+
     let wait_for_ack = |socket: &NlSocket| -> Result<(), Box<dyn Error>> {
         loop {
-            let mut res_buf = [0u8; 520];
+            let mut res_buf = [0u8; 4096];
             let (size, _) = socket.recv(&mut res_buf, Msg::empty())?;
             let mut slice = Cursor::new(Vec::from(&res_buf[..size]));
 
             let msg: Nlmsghdr<u16, Nlmsgerr<u16>> = Nlmsghdr::from_bytes(&mut slice)?;
             if let NlPayload::Payload(err) = msg.nl_payload() {
-                if *err.error() != 0 {
+                if *err.error() == 0 {
+                    return Ok(());
+                } else {
                     println!(
                         "Successfully removed IP {} for Interface {}",
                         ip_addr, ifindex
                     );
                     return Err(io::Error::from_raw_os_error(-err.error()).into());
-                } else {
-                    return Ok(());
                 }
+            }
+
+            if *msg.nl_type() == libc::NLMSG_DONE as u16 {
+                return Ok(());
             }
         }
     };
@@ -951,43 +963,46 @@ pub fn remove_lease_and_gateway_ip(
 // i.e: rebinding leaase
 pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let iface = iface.clone();
-    thread::spawn(move || {
-        let mut last_read = DhcpFile::default();
+    tokio::spawn(async move {
         let mut unicast_renewed = false;
         let mut broadcast_renewed = false;
+        let ifname = iface.ifname.as_ref().unwrap().to_string();
         loop {
-            let info = DhcpStorage::read_file();
-            if let Ok(files) = info {
-                if files.is_empty() {
-                    continue;
-                }
-                let ifname = iface.ifname.as_ref().unwrap().to_string();
-                if let Some(content) = files.iter().find(|f| f.ifname == ifname) {
-                    if last_read != *content {
-                        last_read = content.clone();
-                        println!("New DHCP Connection: {:#?}", content);
-                    }
-                    // actual absolute time the DhcpFile was initiated at
-                    let time_init = content.time_initiated;
+            match DhcpStorage::read_file() {
+                Ok(files) => {
+                    if files.is_empty() {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    };
+                    if let Some(content) = files.iter().find(|f| f.ifname == ifname) {
+                        // actual absolute time the DhcpFile was initiated at
+                        let time_init = content.time_initiated;
 
-                    // duration of the lease lifetime
-                    let ls_dur = content.lease_duration as i64;
-                    loop {
-                        manage_lease(
-                            &iface,
-                            time_init,
-                            ls_dur,
-                            &mut unicast_renewed,
-                            &mut broadcast_renewed,
-                        );
+                        // duration of the lease lifetime
+                        let ls_dur = content.lease_duration as i64;
+                        println!("new dhcp connection");
+                        loop {
+                            manage_lease(
+                                &iface,
+                                time_init,
+                                ls_dur,
+                                &mut unicast_renewed,
+                                &mut broadcast_renewed,
+                            );
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
                     }
                 }
-            } else {
-                break;
+                Err(e) => {
+                    println!("Error in reading dhcp files: {}", e);
+                }
             }
         }
     });
 
+    println!("Setup DHCP Lease Management Thread");
     Ok(())
 }
 
@@ -1022,4 +1037,41 @@ fn manage_lease(
     if let Ok(Some(data)) = data {
         let _ = DhcpStorage::write_from_dhcplease(&data, ifname);
     };
+}
+
+pub async fn autoconnect(hosts: Vec<Host>, iface: &Interface) -> Result<(), Box<dyn Error>> {
+    let saved_connections = list_saved_networks()?;
+    let mut connection: Option<Host> = None;
+    let mut pass: Option<String> = None;
+    if hosts.iter().find(|h| h.is_connected).is_some() {
+        return Ok(());
+    }
+    for ahost in hosts.iter() {
+        for shost in saved_connections.iter() {
+            if &shost.bssid == ahost.bssid.as_ref().unwrap() {
+                connection = Some(ahost.clone());
+                pass = Some(shost.password.clone());
+            }
+        }
+    }
+    if let (Some(host), Some(password)) = (connection, pass) {
+        println!(
+            "Found Saved Network.\n Connecting to {}",
+            host.ssid.as_ref().unwrap()
+        );
+        return connect_to(iface, host, &Some(password)).await;
+    } else {
+        println!("No Saved Connection found.");
+        Err("No Saved Network found.".into())
+    }
+}
+
+pub async fn spawn_autoconnection(hosts: Vec<Host>, iface: &Interface) {
+    let iface = iface.clone();
+    tokio::spawn(async move {
+        loop {
+            let hosts = hosts.clone();
+            autoconnect(hosts, &iface);
+        }
+    });
 }

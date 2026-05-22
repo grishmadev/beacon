@@ -1,14 +1,6 @@
 use beacon::{
-    Command,
     backend::functions::{list_active_signals, list_interfaces},
-    executer::response,
-    wifi::{
-        helper::{
-            get_current_ip, get_family_info, get_gateway_ip, remove_lease_and_gateway_ip,
-            return_on_disconnect,
-        },
-        wpa_supplicant::disconnect,
-    },
+    wifi::helper::{get_current_ip, get_family_info, get_gateway_ip, remove_lease_and_gateway_ip},
 };
 
 #[tokio::main]

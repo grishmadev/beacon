@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use chrono::{TimeZone, Utc};
 use ratatui::{
     Frame,

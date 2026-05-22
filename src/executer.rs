@@ -1,11 +1,8 @@
 use std::{
     error::Error,
     io::{Read, Write},
-    ops::Mul,
     os::unix::net::UnixStream,
 };
-
-use chrono::{TimeZone, Utc};
 
 use crate::{
     Command, Response, SOCKET_PATH,
@@ -13,12 +10,7 @@ use crate::{
         connect_to, current_connection, disconnect_connection, list_active_signals,
         list_all_signals,
     },
-    types::{Interface, InterfaceType},
-    wifi::{
-        dhcp_connection::{DhcpFile, DhcpStorage},
-        helper::{get_family_info, get_interfaces, renew_connection},
-        wpa_supplicant::find_active_interface,
-    },
+    wifi::helper::{autoconnect, get_family_info, get_interfaces},
 };
 
 const RETRIES: u32 = 5;
@@ -39,6 +31,11 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 let family_info = get_family_info()?;
                 let connections = list_active_signals(&family_info, iface.clone())?;
                 if let Some(ifname) = iface.ifname.clone() {
+                    let connections_clone = connections.clone();
+                    let iface_clone = iface.clone();
+                    tokio::spawn(async move {
+                        let _ = autoconnect(connections_clone, &iface_clone).await;
+                    });
                     Response::ActiveHosts(ifname, connections)
                 } else {
                     Response::Error("Unknown Interface.".into())
@@ -65,15 +62,10 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 Err(err) => Response::Error(err.to_string()),
             },
 
-            Command::Disconnect => {
-                let active_interface = find_active_interface();
-                let active_ifname = active_interface?.unwrap().ifname.to_owned().unwrap();
-
-                match disconnect_connection(&active_ifname) {
-                    Ok(_) => Response::Disconnected,
-                    Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
-                }
-            }
+            Command::Disconnect(ifname) => match disconnect_connection(ifname) {
+                Ok(_) => Response::Disconnected,
+                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
+            },
 
             Command::Tick => Response::Tick,
             _ => Response::Error("Unknown Command.".into()),

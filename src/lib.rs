@@ -29,6 +29,8 @@ pub fn mac_to_bytes(mac: &str) -> [u8; 6] {
 pub const SOCKET_PATH: &str = "/run/beacon.sock";
 pub const HISTORY_PATH: &str = "/var/beacon_history.json";
 pub const DHCPINFO_PATH: &str = "/var/beacon_dhcp_info";
+pub const DAEMON_ERR_PATH: &str = "/tmp/beacon.err";
+pub const DAEMON_OUT_PATH: &str = "/tmp/beacon.out";
 
 #[derive(Deserialize, Serialize, Debug, PartialEq)]
 pub enum Command {
@@ -45,7 +47,7 @@ pub enum Command {
     },
     Notification(String),
     ClearNotification,
-    Disconnect,
+    Disconnect(String),
     Info(String), // bssid,
 }
 

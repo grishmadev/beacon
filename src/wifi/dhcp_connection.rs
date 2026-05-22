@@ -33,7 +33,7 @@ impl DhcpStorage {
             .open(DHCPINFO_PATH)?;
         Ok(())
     }
-    pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
+    pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error + Send + Sync>> {
         let path = Path::new(DHCPINFO_PATH);
         if !path.exists() || fs::metadata(path)?.len() == 0 {
             return Ok(Vec::new());
@@ -44,7 +44,7 @@ impl DhcpStorage {
         Ok(dhcp_lease)
     }
 
-    pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
+    pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error + Send + Sync>> {
         let path = Path::new(DHCPINFO_PATH);
         DhcpStorage::empty_out()?;
         content.time_initiated = Utc::now().timestamp();
@@ -65,7 +65,9 @@ impl DhcpStorage {
         file.sync_all()?;
         Ok(())
     }
-    pub fn get_details_of(ifname: String) -> Result<Option<DhcpFile>, Box<dyn Error>> {
+    pub fn get_details_of(
+        ifname: String,
+    ) -> Result<Option<DhcpFile>, Box<dyn Error + Send + Sync>> {
         let files = DhcpStorage::read_file()?;
         if let Some(file) = files.iter().find(|f| f.ifname == ifname) {
             return Ok(Some(file.to_owned()));
@@ -84,11 +86,11 @@ impl DhcpStorage {
             time_initiated: Utc::now().timestamp(),
             ifname,
         };
-        DhcpStorage::write_file(&mut content)?;
+        let _ = DhcpStorage::write_file(&mut content);
         Ok(())
     }
 
-    pub fn empty_out() -> Result<(), Box<dyn Error>> {
+    pub fn empty_out() -> Result<(), Box<dyn Error + Send + Sync>> {
         let path = Path::new(DHCPINFO_PATH);
         let _ = fs::remove_file(path);
         Ok(())

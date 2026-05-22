@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Command,
     debug::write,
-    types::{CurrentConnection, Host, Interface, InterfaceType},
+    types::{CurrentConnection, Host, Interface},
 };
 
 #[derive(Default, Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -227,17 +227,16 @@ impl App {
                 _ => {}
             },
             s => {
-                if s == Tab::Hosts {
-                    match key.code {
-                        KeyCode::Enter => {
-                            let hosts = self.get_hosts();
-                            if hosts.iter().find(|h| h.is_connected).is_some() {
-                                let _ = sx.send(Command::Disconnect);
-                            } else {
-                                self.active_tab = Tab::Input;
-                            }
+                if s == Tab::Hosts
+                    && let KeyCode::Enter = key.code
+                {
+                    let hosts = self.get_hosts();
+                    if hosts.iter().find(|h| h.is_connected).is_some() {
+                        if let Some(iface) = self.get_current_interface() {
+                            let _ = sx.send(Command::Disconnect(iface.ifname.unwrap()));
                         }
-                        _ => {}
+                    } else {
+                        self.active_tab = Tab::Input;
                     }
                 };
                 match key.code {

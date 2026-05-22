@@ -21,7 +21,6 @@ use std::{
     error::Error,
     io::{self},
     sync::mpsc,
-    thread::{self, spawn},
     time::Duration,
 };
 
@@ -135,11 +134,8 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
             && let Event::Key(key) = event::read()?
         {
             app.handle_keys(key, &cmdsx);
-            match key.code {
-                KeyCode::Char('q') => {
-                    break;
-                }
-                _ => {}
+            if let KeyCode::Char('q') = key.code {
+                break;
             }
         }
     }
