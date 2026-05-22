@@ -15,7 +15,10 @@ use crate::{
 
 const RETRIES: u32 = 5;
 
-pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
+pub async fn execute(
+    cmd: &Command,
+    reject_list: &mut Vec<String>,
+) -> Result<Response, Box<dyn Error>> {
     let mut response = Response::Error("Uninitialized Response".into());
 
     for _ in 0..RETRIES {
@@ -33,9 +36,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 if let Some(ifname) = iface.ifname.clone() {
                     let connections_clone = connections.clone();
                     let iface_clone = iface.clone();
-                    tokio::spawn(async move {
-                        let _ = autoconnect(connections_clone, &iface_clone).await;
-                    });
+                    let _ = autoconnect(connections_clone, &iface_clone, reject_list);
                     Response::ActiveHosts(ifname, connections)
                 } else {
                     Response::Error("Unknown Interface.".into())
@@ -53,7 +54,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 host,
                 iface,
                 password,
-            } => match connect_to(iface, host.clone(), password).await {
+            } => match connect_to(iface, host.clone(), password, reject_list).await {
                 Ok(_) => Response::Connected,
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             },
@@ -62,7 +63,7 @@ pub async fn execute(cmd: &Command) -> Result<Response, Box<dyn Error>> {
                 Err(err) => Response::Error(err.to_string()),
             },
 
-            Command::Disconnect(ifname) => match disconnect_connection(ifname) {
+            Command::Disconnect(ifname) => match disconnect_connection(ifname, reject_list) {
                 Ok(_) => Response::Disconnected,
                 Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
             },

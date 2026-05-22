@@ -26,7 +26,6 @@ use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::backend::functions::list_interfaces;
-use crate::debug::write as cwrite;
 use crate::mac_to_bytes;
 use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
@@ -430,7 +429,7 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
     config_lines.push("nameserver 8.8.8.8".to_string());
     config_lines.push("nameserver 1.1.1.1".to_string());
     match write("/etc/resolv.conf", config_lines.join("\n")) {
-        Ok(_) => cwrite("DNS set!".into()),
+        Ok(_) => println!("DNS set!"),
         Err(e) => {
             return Err(e.into());
         }
@@ -520,7 +519,6 @@ pub fn request_host_wireless(
                 let packet = match validate_packet_v2(raw_data, size)? {
                     Some(s) => {
                         println!("Packet successful");
-                        println!("recieved options: {:#?}", s.options);
                         s
                     }
                     None => {
@@ -543,8 +541,7 @@ pub fn request_host_wireless(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused");
-                                let _ = cwrite("Server Refused to acknwoledge.".to_string());
+                                println!("Server Refused to (Ack)nowledge.");
                             }
                             _ => {}
                         },
@@ -844,8 +841,7 @@ pub fn request_host_wired(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused");
-                                let _ = cwrite("Server Refused to acknwoledge.".to_string());
+                                println!("Server Refused to Acknowledge");
                             }
                             _ => {}
                         },
@@ -882,10 +878,8 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let ifname = iface.ifname.as_ref().unwrap();
     // let mac = iface.mac.as_ref().unwrap();
     set_iface_up(*ifindex as i32)?;
-    println!("CHeckpoint 1");
 
     let data = discover_host(iface)?;
-    println!("CHeckpoint 2 data recieved: {:#?}", data);
 
     if let Some(offer) = data.offer
         && let Some(server_id) = data.gateway
@@ -894,7 +888,6 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
         let mac_address = offer.chaddr;
 
         let edata = request_host_wired(mac_address, current_ip, server_id, false)?;
-        println!("Ethernet: {:#?}", edata);
         DhcpStorage::write_from_dhcplease(&edata, ifname.to_string())?;
         add_addr(*ifindex, current_ip)?;
         set_default_route(*ifindex, server_id)?;

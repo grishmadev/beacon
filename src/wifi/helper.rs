@@ -1039,7 +1039,11 @@ fn manage_lease(
     };
 }
 
-pub async fn autoconnect(hosts: Vec<Host>, iface: &Interface) -> Result<(), Box<dyn Error>> {
+pub async fn autoconnect(
+    hosts: Vec<Host>,
+    iface: &Interface,
+    reject_list: &mut Vec<String>,
+) -> Result<(), Box<dyn Error>> {
     let saved_connections = list_saved_networks()?;
     let mut connection: Option<Host> = None;
     let mut pass: Option<String> = None;
@@ -1047,6 +1051,13 @@ pub async fn autoconnect(hosts: Vec<Host>, iface: &Interface) -> Result<(), Box<
         return Ok(());
     }
     for ahost in hosts.iter() {
+        if reject_list
+            .iter()
+            .find(|f| *f == ahost.ssid.as_ref().unwrap())
+            .is_some()
+        {
+            continue;
+        };
         for shost in saved_connections.iter() {
             if &shost.bssid == ahost.bssid.as_ref().unwrap() {
                 connection = Some(ahost.clone());
@@ -1059,19 +1070,23 @@ pub async fn autoconnect(hosts: Vec<Host>, iface: &Interface) -> Result<(), Box<
             "Found Saved Network.\n Connecting to {}",
             host.ssid.as_ref().unwrap()
         );
-        return connect_to(iface, host, &Some(password)).await;
+        return connect_to(iface, host, &Some(password), reject_list).await;
     } else {
         println!("No Saved Connection found.");
         Err("No Saved Network found.".into())
     }
 }
 
-pub async fn spawn_autoconnection(hosts: Vec<Host>, iface: &Interface) {
-    let iface = iface.clone();
-    tokio::spawn(async move {
-        loop {
-            let hosts = hosts.clone();
-            autoconnect(hosts, &iface);
-        }
-    });
-}
+// pub async fn spawn_autoconnection(
+//     hosts: Vec<Host>,
+//     iface: &Interface,
+//     reject_list: &mut Vec<String>,
+// ) {
+//     let iface = iface.clone();
+//     tokio::spawn(async move {
+//         loop {
+//             let hosts = hosts.clone();
+//             autoconnect(hosts, &iface, reject_list);
+//         }
+//     });
+// }

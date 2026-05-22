@@ -1,6 +1,5 @@
 use beacon::{
     Command, Response,
-    debug::write,
     executer::response,
     frontend::{
         app::{App, Tab},
@@ -27,7 +26,7 @@ use std::{
 #[tokio::main]
 async fn main() {
     if let Err(e) = main_loop().await {
-        let _ = write(e.to_string());
+        eprintln!("Error: {}", e);
     };
 }
 async fn main_loop() -> Result<(), Box<dyn Error>> {
@@ -53,7 +52,6 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
                         tokio::spawn(async move {
                             let delay = 3;
                             let duration = Duration::from_secs(delay);
-                            let _ = write("disable notifcation in 3 secs".to_string());
                             tokio::time::sleep(duration).await;
                             let _ = ressx_clone.send(Response::ClearNotification);
                         });

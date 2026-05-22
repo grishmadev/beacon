@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Command,
-    debug::write,
     types::{CurrentConnection, Host, Interface},
 };
 
@@ -281,7 +280,6 @@ impl App {
     }
 
     pub fn set_hosts(&mut self, hosts: Vec<Host>, ifname: &str) {
-        let _ = write(format!("hosts: {:#?}, ifname: {}", hosts, ifname));
         if let Some(target) = self
             .group
             .iter_mut()

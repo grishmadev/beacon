@@ -75,7 +75,6 @@ impl DhcpStorage {
         Ok(None)
     }
     pub fn write_from_dhcplease(data: &DhcpLease, ifname: String) -> Result<(), Box<dyn Error>> {
-        println!("dhcp info: {:#?}", data);
         let mut content = DhcpFile {
             ip_addr: data.ip_addr,
             subnet_mask: data.subnet_mask,

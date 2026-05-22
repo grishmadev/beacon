@@ -93,6 +93,7 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
         };
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
+            let mut reject_list = Vec::<String>::new();
             loop {
                 match socket.read(&mut buf).await {
                     Ok(0) => {
@@ -107,7 +108,7 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
                             }
                         };
                         println!("Command: {:#?}", cmd);
-                        let response = match execute(&cmd).await {
+                        let response = match execute(&cmd, &mut reject_list).await {
                             Ok(s) => s,
                             Err(e) => Response::Error(e.to_string()),
                         };

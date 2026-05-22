@@ -55,6 +55,7 @@ pub async fn connect_to(
     iface: &Interface,
     host: Host,
     password: &Option<String>,
+    reject_list: &mut Vec<String>,
 ) -> Result<(), Box<dyn Error>> {
     let saved_networks = list_all_signals()?;
 
@@ -85,6 +86,9 @@ pub async fn connect_to(
                 bssid: bssid.to_string(),
                 password: final_password,
             };
+            if let Some(host) = reject_list.iter().position(|f| f == &ssid) {
+                reject_list.remove(host);
+            }
             add_connection_to_history(connection)?;
         }
         Err(e) => {
@@ -94,8 +98,17 @@ pub async fn connect_to(
     Ok(())
 }
 
-pub fn disconnect_connection(ifname: &str) -> Result<(), Box<dyn Error>> {
-    disconnect(ifname, true)?;
+pub fn disconnect_connection(
+    ifname: &str,
+    reject_list: &mut Vec<String>,
+) -> Result<(), Box<dyn Error>> {
+    let family_info = get_family_info()?;
+    if disconnect(ifname, true).is_ok() {
+        if let Some(current) = get_current(family_info.id)? {
+            let ssid = current.ssid.unwrap();
+            reject_list.push(ssid);
+        }
+    };
     Ok(())
 }
 
