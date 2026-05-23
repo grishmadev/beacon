@@ -1,5 +1,7 @@
 # Beacon
 
+![App Screenshot](assets/beacon-ss.png)
+
 ### A simple wifi manager
 
 Hello Everyone, This is Beacon, a lightweight alternative for NetworkManager in the making.
