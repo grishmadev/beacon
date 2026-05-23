@@ -28,7 +28,7 @@ sudo beacond -b
 
 ```
 
-1. Start the Client
+2. Start the Client
 
 ```sh
 sudo beacon
