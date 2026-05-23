@@ -2,13 +2,37 @@
 
 ![App Screenshot](assets/screenshot1.png)
 
-### A simple wifi manager
+### A Simple WiFi Manager
 
 Hello Everyone, This is Beacon, a lightweight alternative for NetworkManager in the making.
 
 ## Architecture
 
 This Project uses the Daemon - Client Achitecture meaning a daemon(beacond) will be running in the background while user can communicate with the daemon using the tui(beacon).
+
+## Installation
+
+Run the Install Script `install.sh`
+
+```sh
+./install.sh
+```
+
+## How to Run
+
+1. Start the Daemon
+
+```sh
+# -b flag for running in background
+sudo beacond -b
+
+```
+
+1. Start the Client
+
+```sh
+sudo beacon
+```
 
 ## Crates Used
 
@@ -21,15 +45,15 @@ This Project uses the Daemon - Client Achitecture meaning a daemon(beacond) will
 - serde - Serialization and De-Serialization
 - serde_json - Json serialization and deserialization
 - bincode - Helps with the actual conversion of Serilization and De-Serialization data.
-- neli - Used for creating raw Netlink Commands
+- neli - Creating raw Netlink Commands
 - ratatui - TUI Library
-- chrono - For Tracking time.
+- chrono - Tracking time.
 
 ## Prerequisites
 
-- `wpa_supplication` needs to be installed
+- `wpa_supplicant` needs to be installed
 
-Thats it!
+That's it!
 
 This was the description pretty much.
 A Star would be Appreciated.
