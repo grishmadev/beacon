@@ -1,6 +1,6 @@
 # Beacon
 
-![App Screenshot](assets/beacon-ss.png)
+![App Screenshot](assets/screenshot1.png)
 
 ### A simple wifi manager
 
