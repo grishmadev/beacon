@@ -1039,12 +1039,12 @@ fn manage_lease(
     };
 }
 
-pub async fn autoconnect(
-    hosts: Vec<Host>,
+pub fn autoconnect(
+    hosts: &[Host],
     iface: &Interface,
-    reject_list: &mut Vec<String>,
-) -> Result<(), Box<dyn Error>> {
-    let saved_connections = list_saved_networks()?;
+    reject_list: &mut [String],
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let saved_connections = list_saved_networks().unwrap_or_default();
     let mut connection: Option<Host> = None;
     let mut pass: Option<String> = None;
     if hosts.iter().find(|h| h.is_connected).is_some() {
@@ -1070,7 +1070,11 @@ pub async fn autoconnect(
             "Found Saved Network.\n Connecting to {}",
             host.ssid.as_ref().unwrap()
         );
-        return connect_to(iface, host, &Some(password), reject_list).await;
+        let iface = iface.clone();
+        tokio::spawn(async move {
+            let _ = connect_to(&iface, host, &Some(password), None).await;
+        });
+        Ok(())
     } else {
         println!("No Saved Connection found.");
         Err("No Saved Network found.".into())

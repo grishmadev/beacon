@@ -55,7 +55,7 @@ pub async fn connect_to(
     iface: &Interface,
     host: Host,
     password: &Option<String>,
-    reject_list: &mut Vec<String>,
+    reject_list: Option<&mut Vec<String>>,
 ) -> Result<(), Box<dyn Error>> {
     let saved_networks = list_all_signals()?;
 
@@ -86,8 +86,10 @@ pub async fn connect_to(
                 bssid: bssid.to_string(),
                 password: final_password,
             };
-            if let Some(host) = reject_list.iter().position(|f| f == &ssid) {
-                reject_list.remove(host);
+            if let Some(reject_list) = reject_list {
+                if let Some(host) = reject_list.iter().position(|f| f == &ssid) {
+                    reject_list.remove(host);
+                }
             }
             add_connection_to_history(connection)?;
         }

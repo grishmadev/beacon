@@ -34,9 +34,6 @@ pub async fn execute(
                 let family_info = get_family_info()?;
                 let connections = list_active_signals(&family_info, iface.clone())?;
                 if let Some(ifname) = iface.ifname.clone() {
-                    let connections_clone = connections.clone();
-                    let iface_clone = iface.clone();
-                    let _ = autoconnect(connections_clone, &iface_clone, reject_list);
                     Response::ActiveHosts(ifname, connections)
                 } else {
                     Response::Error("Unknown Interface.".into())
@@ -54,7 +51,7 @@ pub async fn execute(
                 host,
                 iface,
                 password,
-            } => match connect_to(iface, host.clone(), password, reject_list).await {
+            } => match connect_to(iface, host.clone(), password, Some(reject_list)).await {
                 Ok(_) => Response::Connected,
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             },

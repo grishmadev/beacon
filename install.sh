@@ -1,10 +1,7 @@
 #!/bin/bash
 
 echo "Building Beacon Client"
-cargo build --bin beacon --release
-echo "Build Complete"
-echo "Building Beacon Daemon"
-cargo build --bin beacond --release
+cargo build --release
 echo "Build Complete"
 
 sudo cp ./target/release/beacon /usr/bin/beacon

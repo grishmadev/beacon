@@ -4,23 +4,26 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::Duration,
 };
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
+    sync::Mutex,
 };
 
 use chrono::Utc;
 
 use crate::{
     Command, Response, SOCKET_PATH,
-    backend::functions::list_interfaces,
+    backend::functions::{list_active_signals, list_interfaces},
     executer::execute,
     types::InterfaceType,
     wifi::{
-        dhcp_connection::DhcpStorage, helper::manage_lease_thread,
+        dhcp_connection::DhcpStorage,
+        helper::{autoconnect, get_family_info, manage_lease_thread},
         wpa_supplicant::connect_via_ethernet,
     },
 };
@@ -81,6 +84,30 @@ pub fn spawn_residue_connection() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+pub fn spawn_autoconnection(reject_list: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let ifaces = list_interfaces().unwrap_or_default();
+    for iface in ifaces {
+        if iface.iftype != InterfaceType::Wireless {
+            continue;
+        }
+        let reject_list = reject_list.clone();
+        thread::spawn(move || {
+            let family_info = get_family_info().unwrap();
+            let mut reject_list = reject_list.clone();
+            loop {
+                let hosts_res = list_active_signals(&family_info, iface.clone());
+
+                if let Ok(hosts) = hosts_res {
+                    let _ = autoconnect(&hosts, &iface, &mut reject_list);
+                };
+
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+    Ok(())
+}
+
 // Main Request Response Thread
 pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
     let listener = UnixListener::bind(SOCKET_PATH).unwrap();
@@ -94,6 +121,7 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
             let mut reject_list = Vec::<String>::new();
+            let _ = spawn_autoconnection(reject_list.clone());
             loop {
                 match socket.read(&mut buf).await {
                     Ok(0) => {
