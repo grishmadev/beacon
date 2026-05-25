@@ -1,4 +1,7 @@
-use std::error::Error;
+use std::{
+    error::Error,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     types::{Connection, CurrentConnection, FamilyInfo, Host, Interface, InterfaceType},
@@ -12,14 +15,14 @@ use crate::{
 pub fn list_active_signals(
     family_info: &FamilyInfo,
     interface: Interface,
-) -> Result<Vec<Host>, Box<dyn Error>> {
+) -> Result<Vec<Host>, Box<dyn Error + Send + Sync>> {
     let mut result = vec![];
     let family_id = family_info.id;
     if interface.iftype != InterfaceType::Wireless {
         return Ok(Vec::new());
     }
     let ifindex = interface.ifindex.unwrap();
-    trigger_scan(family_info, ifindex)?;
+    trigger_scan(family_info, ifindex).unwrap();
     let hosts = get_scan(family_id, ifindex)?;
     // let logs = format!(
     //     "hosts for {:?} {:?}",
@@ -51,13 +54,13 @@ pub fn list_all_signals() -> Result<Vec<Connection>, Box<dyn Error>> {
     Ok(networks)
 }
 
-pub async fn connect_to(
+pub fn connect_to(
     iface: &Interface,
     host: Host,
     password: &Option<String>,
-    reject_list: Option<&mut Vec<String>>,
-) -> Result<(), Box<dyn Error>> {
-    let saved_networks = list_all_signals()?;
+    reject_list: Option<Arc<Mutex<Vec<String>>>>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let saved_networks = list_all_signals().unwrap_or_default();
 
     let found_password_option = saved_networks
         .iter()
@@ -78,7 +81,7 @@ pub async fn connect_to(
     };
     let bssid = host.bssid.expect("No BSSID found.");
     let ssid = host.ssid.expect("Target SSID missing.");
-    match connect(iface, &ssid, &final_password).await {
+    match connect(iface, &ssid, &final_password) {
         Ok(_) => {
             // saving connection
             let connection = Connection {
@@ -86,15 +89,17 @@ pub async fn connect_to(
                 bssid: bssid.to_string(),
                 password: final_password,
             };
-            if let Some(reject_list) = reject_list {
-                if let Some(host) = reject_list.iter().position(|f| f == &ssid) {
-                    reject_list.remove(host);
+            if let Some(list) = reject_list {
+                let mut guard = list.lock().unwrap();
+                if let Some(idx) = guard.iter().position(|f| f == &ssid) {
+                    guard.remove(idx);
                 }
             }
-            add_connection_to_history(connection)?;
+            add_connection_to_history(connection).unwrap();
         }
         Err(e) => {
-            return Err(e);
+            println!("Connection Error: {:#?}", e);
+            return Ok(());
         }
     };
     Ok(())
@@ -102,13 +107,20 @@ pub async fn connect_to(
 
 pub fn disconnect_connection(
     ifname: &str,
-    reject_list: &mut Vec<String>,
+    reject_list: Option<Arc<Mutex<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let family_info = get_family_info()?;
+    let family_info = get_family_info().unwrap();
     if disconnect(ifname, true).is_ok() {
         if let Some(current) = get_current(family_info.id)? {
             let ssid = current.ssid.unwrap();
-            reject_list.push(ssid);
+            if let Some(list) = reject_list {
+                let mut guard = list.lock().unwrap();
+                if let Some(idx) = guard.iter().position(|f| f == &ssid) {
+                    guard.remove(idx);
+                }
+            }
+        } else {
+            eprintln!("No SSID Found in Saved List.");
         }
     };
     Ok(())
@@ -120,7 +132,7 @@ pub fn list_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
 }
 
 pub fn current_connection() -> Result<Option<CurrentConnection>, Box<dyn Error>> {
-    let family_info = get_family_info()?;
+    let family_info = get_family_info().unwrap();
     let family_id = family_info.id;
     let info = get_current(family_id)?;
     Ok(info)

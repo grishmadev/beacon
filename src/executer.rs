@@ -2,23 +2,28 @@ use std::{
     error::Error,
     io::{Read, Write},
     os::unix::net::UnixStream,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
     Command, Response, SOCKET_PATH,
-    backend::functions::{
-        connect_to, current_connection, disconnect_connection, list_active_signals,
-        list_all_signals,
+    backend::{
+        EventCommand,
+        functions::{
+            connect_to, current_connection, disconnect_connection, list_active_signals,
+            list_all_signals,
+        },
     },
     wifi::helper::{autoconnect, get_family_info, get_interfaces},
 };
+use tokio::sync::Mutex as Amutex;
 
 const RETRIES: u32 = 5;
 
-pub async fn execute(
+pub fn execute(
     cmd: &Command,
-    reject_list: &mut Vec<String>,
-) -> Result<Response, Box<dyn Error>> {
+    reject_list: Arc<Mutex<Vec<String>>>,
+) -> Result<Response, Box<dyn Error + Send + Sync>> {
     let mut response = Response::Error("Uninitialized Response".into());
 
     for _ in 0..RETRIES {
@@ -26,7 +31,7 @@ pub async fn execute(
             Command::Ping => Response::Pong,
 
             Command::ListConnections => {
-                let hosts = list_all_signals()?;
+                let hosts = list_all_signals().unwrap();
                 Response::SavedHosts(hosts)
             }
 
@@ -41,7 +46,7 @@ pub async fn execute(
             }
 
             Command::ListInterfaces => {
-                let interfaces = get_interfaces()?;
+                let interfaces = get_interfaces().unwrap();
                 Response::AllInterfaces(interfaces.clone())
             }
 
@@ -51,19 +56,25 @@ pub async fn execute(
                 host,
                 iface,
                 password,
-            } => match connect_to(iface, host.clone(), password, Some(reject_list)).await {
-                Ok(_) => Response::Connected,
-                Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
-            },
+            } => {
+                let list = Arc::clone(&reject_list);
+                match connect_to(iface, host.clone(), password, Some(list)) {
+                    Ok(_) => Response::Connected,
+                    Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
+                }
+            }
             Command::CurrentConnection => match current_connection() {
                 Ok(curcon) => Response::CurrentConnection(curcon),
                 Err(err) => Response::Error(err.to_string()),
             },
 
-            Command::Disconnect(ifname) => match disconnect_connection(ifname, reject_list) {
-                Ok(_) => Response::Disconnected,
-                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
-            },
+            Command::Disconnect(ifname) => {
+                let list = Arc::clone(&reject_list);
+                match disconnect_connection(ifname, Some(list)) {
+                    Ok(_) => Response::Disconnected,
+                    Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
+                }
+            }
 
             Command::Tick => Response::Tick,
             _ => Response::Error("Unknown Command.".into()),

@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -11,7 +11,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
-    sync::Mutex,
+    sync::Mutex as Amutex,
 };
 
 use chrono::Utc;
@@ -23,7 +23,7 @@ use crate::{
     types::InterfaceType,
     wifi::{
         dhcp_connection::DhcpStorage,
-        helper::{autoconnect, get_family_info, manage_lease_thread},
+        helper::{autoconnect, get_family_info, get_scan, manage_lease_thread},
         wpa_supplicant::connect_via_ethernet,
     },
 };
@@ -84,24 +84,31 @@ pub fn spawn_residue_connection() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn spawn_autoconnection(reject_list: Vec<String>) -> Result<(), Box<dyn Error>> {
+pub async fn spawn_autoconnection(
+    reject_list: Arc<Mutex<Vec<String>>>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let ifaces = list_interfaces().unwrap_or_default();
     for iface in ifaces {
         if iface.iftype != InterfaceType::Wireless {
             continue;
         }
         let reject_list = reject_list.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
+            println!(
+                "Spawned Autoconnection for {}",
+                iface.ifname.as_ref().unwrap()
+            );
             let family_info = get_family_info().unwrap();
-            let mut reject_list = reject_list.clone();
+            let mut connected = false;
             loop {
-                let hosts_res = list_active_signals(&family_info, iface.clone());
+                let hosts_res = get_scan(family_info.id, iface.ifindex.unwrap_or_default()).ok();
 
-                if let Ok(hosts) = hosts_res {
-                    let _ = autoconnect(&hosts, &iface, &mut reject_list);
-                };
+                if let Some(hosts) = hosts_res {
+                    let list = reject_list.lock().unwrap();
 
-                thread::sleep(Duration::from_secs(2));
+                    autoconnect(&hosts, &iface, &list, &mut connected);
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
     }
@@ -109,9 +116,12 @@ pub fn spawn_autoconnection(reject_list: Vec<String>) -> Result<(), Box<dyn Erro
 }
 
 // Main Request Response Thread
-pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
+pub async fn spawn_main_loop(
+    reject_list: Arc<Mutex<Vec<String>>>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let listener = UnixListener::bind(SOCKET_PATH).unwrap();
     loop {
+        let reject_list = Arc::clone(&reject_list);
         let (mut socket, _) = match listener.accept().await {
             Ok(s) => s,
             Err(_) => {
@@ -120,8 +130,6 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
         };
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
-            let mut reject_list = Vec::<String>::new();
-            let _ = spawn_autoconnection(reject_list.clone());
             loop {
                 match socket.read(&mut buf).await {
                     Ok(0) => {
@@ -136,7 +144,8 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
                             }
                         };
                         println!("Command: {:#?}", cmd);
-                        let response = match execute(&cmd, &mut reject_list).await {
+                        let reject_list = Arc::clone(&reject_list);
+                        let response = match execute(&cmd, reject_list) {
                             Ok(s) => s,
                             Err(e) => Response::Error(e.to_string()),
                         };
@@ -161,8 +170,16 @@ pub async fn spawn_main_loop() -> Result<(), Box<dyn Error>> {
 
 pub async fn beacond() -> Result<(), Box<dyn Error>> {
     println!("Server Started. :D\nDaemon listening on {}", SOCKET_PATH);
+    let reject_list = Arc::new(Mutex::new(Vec::<String>::new()));
+    let reject_list_clone = Arc::clone(&reject_list);
+
     spawn_ethernet_connection()?;
     spawn_residue_connection()?;
-    spawn_main_loop().await?;
+    if let Err(e) = spawn_autoconnection(reject_list_clone).await {
+        println!("Error in Autoconnect: {}", e.to_string());
+    };
+    if let Err(e) = spawn_main_loop(Arc::clone(&reject_list)).await {
+        println!("Error in Main Loop: {}", e.to_string());
+    }
     Ok(())
 }

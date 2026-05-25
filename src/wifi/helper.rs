@@ -44,7 +44,7 @@ use std::{error::Error, io::Cursor, path::Path};
 
 use nl80211::{Nl80211Attr, Nl80211Bss, Nl80211Cmd};
 
-pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error>> {
+pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error + Send + Sync>> {
     let sock = NlSocket::new(NlFamily::Generic)?;
     let mut family_name = b"nl80211".to_vec();
     family_name.push(0);
@@ -153,7 +153,7 @@ pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error>> {
     Ok(family_info)
 }
 
-pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error>> {
+pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error + Send + Sync>> {
     let mut result = Vec::<Host>::new();
     let sock = NlSocket::new(NlFamily::Generic)?;
 
@@ -436,7 +436,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 }
             }
             if let Some(ifindex) = connection.ifindex {
-                let hosts = get_scan(family_id, ifindex)?;
+                let hosts = get_scan(family_id, ifindex).unwrap_or_default();
                 match hosts.into_iter().find(|h| h.is_connected) {
                     Some(host) => {
                         connection.ssid = host.ssid;
@@ -584,7 +584,7 @@ pub fn renew_connection(
     broadcast: bool,
 ) -> Result<Option<DhcpLease>, Box<dyn Error>> {
     let wired = iface.iftype == InterfaceType::Wired;
-    let family_info = get_family_info()?;
+    let family_info = get_family_info().unwrap_or_default();
     let family_id = family_info.id;
     let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
 
@@ -724,9 +724,7 @@ pub fn setup_iface(ifindex: u32) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn add_addr(ifindex: u32, ip: Ipv4Addr) -> Result<(), Box<dyn Error>> {
-    let sock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
-
+pub fn add_addr(sock: &NlSocket, ifindex: u32, ip: Ipv4Addr) -> Result<(), Box<dyn Error>> {
     let mut rt_buf = RtBuffer::new();
     rt_buf.push(
         RtattrBuilder::default()
@@ -755,9 +753,11 @@ pub fn add_addr(ifindex: u32, ip: Ipv4Addr) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-pub fn set_default_route(ifindex: u32, gateway: Ipv4Addr) -> Result<(), Box<dyn Error>> {
-    let sock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
-
+pub fn set_default_route(
+    sock: &NlSocket,
+    ifindex: u32,
+    gateway: Ipv4Addr,
+) -> Result<(), Box<dyn Error>> {
     let mut rtbuf = RtBuffer::new();
     rtbuf.push(
         RtattrBuilder::default()
@@ -802,9 +802,7 @@ pub fn get_iface_mac(ifname: &str) -> Result<[u8; 6], Box<dyn Error>> {
     Ok(mac_to_bytes(&mac))
 }
 
-pub fn set_iface_up(ifindex: i32) -> Result<(), Box<dyn Error>> {
-    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
-
+pub fn set_iface_up(socket: &NlSocket, ifindex: i32) -> Result<(), Box<dyn Error>> {
     let ifinfo = IfinfomsgBuilder::default()
         .ifi_family(RtAddrFamily::Unspecified)
         .ifi_index(ifindex)
@@ -1042,55 +1040,56 @@ fn manage_lease(
 pub fn autoconnect(
     hosts: &[Host],
     iface: &Interface,
-    reject_list: &mut [String],
+    reject_list: &[String],
+    connected: &mut bool,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let saved_connections = list_saved_networks().unwrap_or_default();
-    let mut connection: Option<Host> = None;
-    let mut pass: Option<String> = None;
+    // Seeing if any host is already connected
     if hosts.iter().find(|h| h.is_connected).is_some() {
+        *connected = true;
         return Ok(());
     }
-    for ahost in hosts.iter() {
-        if reject_list
-            .iter()
-            .find(|f| *f == ahost.ssid.as_ref().unwrap())
-            .is_some()
-        {
-            continue;
-        };
-        for shost in saved_connections.iter() {
-            if &shost.bssid == ahost.bssid.as_ref().unwrap() {
-                connection = Some(ahost.clone());
-                pass = Some(shost.password.clone());
+    if *connected {
+        return Ok(());
+    }
+
+    // Checking if host is already in reject list
+    let conpas = {
+        let saved_connections = list_saved_networks().unwrap_or_default();
+        let mut connection: Option<Host> = None;
+        let mut pass: Option<String> = None;
+
+        // Checking if host is already in reject list
+        for ahost in hosts.iter() {
+            if reject_list
+                .iter()
+                .any(|f| f == ahost.ssid.as_ref().unwrap())
+            {
+                continue;
+            }
+            for shost in saved_connections.iter() {
+                if &shost.bssid == ahost.bssid.as_ref().unwrap() {
+                    connection = Some(ahost.clone());
+                    pass = Some(shost.password.clone());
+                    break;
+                } else {
+                    *connected = false;
+                }
             }
         }
-    }
-    if let (Some(host), Some(password)) = (connection, pass) {
+        (connection, pass)
+    };
+    if let (Some(host), Some(password)) = conpas {
         println!(
             "Found Saved Network.\n Connecting to {}",
             host.ssid.as_ref().unwrap()
         );
         let iface = iface.clone();
-        tokio::spawn(async move {
-            let _ = connect_to(&iface, host, &Some(password), None).await;
-        });
+        if let Err(e) = connect_to(&iface, host, &Some(password), None) {
+            println!("Connection Error 2: {}", e.to_string());
+        };
         Ok(())
     } else {
         println!("No Saved Connection found.");
         Err("No Saved Network found.".into())
     }
 }
-
-// pub async fn spawn_autoconnection(
-//     hosts: Vec<Host>,
-//     iface: &Interface,
-//     reject_list: &mut Vec<String>,
-// ) {
-//     let iface = iface.clone();
-//     tokio::spawn(async move {
-//         loop {
-//             let hosts = hosts.clone();
-//             autoconnect(hosts, &iface, reject_list);
-//         }
-//     });
-// }

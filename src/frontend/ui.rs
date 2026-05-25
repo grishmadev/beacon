@@ -107,7 +107,12 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
             .single()
             .unwrap()
             - Utc::now();
-        add_attr("Time Left", &format!("{} s", time_left.num_seconds()));
+        let print_time = if time_left.num_seconds().is_negative() {
+            "Loading..."
+        } else {
+            &time_left.num_seconds().to_string()
+        };
+        add_attr("Time Left", print_time);
         // add_attr(
         //     "Renewal Time",
         //     &(curcon.lease_duration as f32 / 2.0).to_string(),

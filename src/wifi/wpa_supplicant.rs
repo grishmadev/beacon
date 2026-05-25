@@ -9,17 +9,23 @@ use std::os::unix::net::UnixDatagram;
 use std::time::{Duration, Instant};
 use std::{slice, thread};
 
+use daemonize::Group;
 use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
 use etherparse::PacketBuilder;
 use neli::attr::Attribute;
 use neli::consts::nl::NlmF;
-use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
+use neli::consts::rtnl::{
+    Arphrd, Ifa, IfaF, Iff, RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot,
+};
 use neli::consts::socket::{Msg, NlFamily};
 use neli::nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder};
-use neli::rtnl::{Rtmsg, RtmsgBuilder};
+use neli::rtnl::{
+    IfaddrmsgBuilder, Ifinfomsg, IfinfomsgBuilder, Rtattr, RtattrBuilder, Rtmsg, RtmsgBuilder,
+};
 use neli::socket::NlSocket;
-use neli::types::RtBuffer;
+use neli::socket::synchronous::NlSocketHandle;
+use neli::types::{Buffer, RtBuffer};
 use neli::utils::Groups;
 use neli::{FromBytes, ToBytes};
 use rtnetlink::{Handle, new_connection};
@@ -36,7 +42,7 @@ use crate::wifi::helper::{
     validate_packet_v2,
 };
 
-pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
+pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
     let ifname = iface.ifname.as_ref().ok_or("Interface Name not found.")?;
     let ifindex = iface.ifindex.as_ref().ok_or("Interface Index not found.")?;
     let server_path = format!("/var/run/wpa_supplicant/{}", ifname);
@@ -167,17 +173,20 @@ pub async fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<()
         return Err("Failed to get ip address from dhcp server.".into());
     }
 
-    let (connection, handle, _) = new_connection()?;
+    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
 
-    tokio::spawn(connection);
+    // tokio::spawn(connection);
 
-    apply_network_config(
-        handle,
+    // Async Function
+    println!("Applying Network Configurations.");
+    if let Err(e) = apply_network_config(
+        &socket,
         *ifindex,
         host_data.ip_addr.unwrap(),
         host_data.gateway.unwrap(),
-    )
-    .await?;
+    ) {
+        println!("Err: {}", e);
+    }
 
     set_dns(host_data.dns_servers)?;
 
@@ -391,32 +400,15 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
     Ok(result)
 }
 
-async fn apply_network_config(
-    handle: Handle,
+fn apply_network_config(
+    socket: &NlSocket,
     ifindex: u32,
     ip: Ipv4Addr,
     gateway: Ipv4Addr,
 ) -> Result<(), Box<dyn Error>> {
-    // Add IP address (/24)
-    handle
-        .address()
-        .add(ifindex, ip.into(), 24)
-        .execute()
-        .await?;
-
-    // set the interface up
-    handle.link().set(ifindex).up().execute().await?;
-
-    // Add default route
-    handle
-        .route()
-        .add()
-        .v4()
-        .destination_prefix(Ipv4Addr::UNSPECIFIED, 0)
-        .gateway(gateway)
-        .execute()
-        .await?;
-
+    add_addr(socket, ifindex, ip)?;
+    set_default_route(socket, ifindex, gateway)?;
+    println!("Network Configurations Applied.");
     Ok(())
 }
 
@@ -613,7 +605,7 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
     let ifindex = iface.ifindex.as_ref().expect("No Ifindex found.");
     let mac = iface.mac.as_ref().expect("No Ifindex found.");
 
-    let mac = mac_to_bytes(&mac);
+    let mac = mac_to_bytes(mac);
     // point it at global broadcast address
     // socket used only for sending signals
     // let broadcast_addr: SockAddr =
@@ -627,8 +619,9 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
         Some(Protocol::from((libc::ETH_P_ALL as u16).to_be() as i32)),
     )?;
     socket.bind_device(Some(ifname.as_bytes()))?;
+    let nlsock = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
 
-    set_iface_up(*ifindex as i32)?;
+    set_iface_up(&nlsock, *ifindex as i32)?;
     for _ in 0..total_retries {
         let msg = Packet {
             reply: false,
@@ -874,10 +867,11 @@ pub fn request_host_wired(
 
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
+    let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
     let ifindex = iface.ifindex.as_ref().unwrap();
     let ifname = iface.ifname.as_ref().unwrap();
     // let mac = iface.mac.as_ref().unwrap();
-    set_iface_up(*ifindex as i32)?;
+    set_iface_up(&socket, *ifindex as i32)?;
 
     let data = discover_host(iface)?;
 
@@ -889,8 +883,8 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
 
         let edata = request_host_wired(mac_address, current_ip, server_id, false)?;
         DhcpStorage::write_from_dhcplease(&edata, ifname.to_string())?;
-        add_addr(*ifindex, current_ip)?;
-        set_default_route(*ifindex, server_id)?;
+        add_addr(&socket, *ifindex, current_ip)?;
+        set_default_route(&socket, *ifindex, server_id)?;
         set_dns(edata.dns_servers)?;
         Ok(())
     } else {
