@@ -307,8 +307,9 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     // };
     // }
     println!("Removing lease and gateway IP");
-    // thread::spawn(move || {});
-    let _ = remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
+    thread::spawn(move || {
+        let _ = remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
+    });
     println!("Removed Lease IP");
     let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
