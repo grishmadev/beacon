@@ -1,0 +1,23 @@
+[package]
+name = "buffering"
+version = "0.4.2"
+authors = ["John Baublitz <john.m.baublitz@gmail.com>"]
+description = "A library primarily designed for network packet buffer operations"
+license = "BSD-3-Clause"
+repository = "https://github.com/jbaublitz/buffering"
+keywords = ["buffer", "network"]
+include = [
+    "**/*.rs",
+    "Cargo.toml",
+    "LICENSE",
+]
+
+[dev-dependencies]
+byteorder = "1"
+
+[dependencies]
+buffering_nocopy_macro = { path = "./nocopy_macro", version = "0.2.0", optional = true }
+
+[features]
+copy = []
+nocopy = ["buffering_nocopy_macro"]
