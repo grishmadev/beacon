@@ -2,25 +2,53 @@
 
 ![App Screenshot](assets/screenshot1.png)
 
-### A Simple WiFi Manager
+### A lightweight WiFi Manager
 
-Hello Everyone, This is Beacon, a lightweight alternative for NetworkManager in the making.
+Beacon is a minimal alternative to `NetworkManager` written fully in Rust.
+Status: Core functionality is stable. Work in Progress for Upcoming features.
 
 ## Architecture
 
-This Project uses the Daemon - Client Achitecture meaning a daemon(beacond) will be running in the background while user can communicate with the daemon using the tui(beacon).
+This Project uses Daemon - Client Architecture meaning a daemon(`beacond`) will be running in the background while user can communicate with the daemon using the tui(`beacon`).
+
+## Features
+
+- Automatic Connection if once already connected
+- Periodic WiFi Scan with Auto-Connection.
+- Ethernet Support.
+- Multiple Interface Control (Wireless)
+- Daemon-Client separation i.e Users do not lose state on client crash.
+
+## Prerequisites
+
+- `wpa_supplicant` needs to be installed
 
 ## Installation
 
-Run the Install Script `install.sh`
+### Void Linux
 
 ```sh
-./install.sh
+# Installing the binaries
+sudo xbps-install beacon
+
+# linking with Runit to run on startup
+sudo ln -s /etc/sv/beacon/ /var/service/
 ```
+
+### Install from source
+
+```sh
+cargo build --release
+sudo ./install.sh
+```
+
+**Note:** The install script only works for systems running systemd or runit
 
 ## How to Run
 
-1. Start the Daemon
+### Start the Daemon
+
+**Note:** If you do not have `systemd` or `runit`, run daemon in background manually with
 
 ```sh
 # -b flag for running in background
@@ -28,7 +56,7 @@ sudo beacond -b
 
 ```
 
-2. Start the Client
+1. Start the Client
 
 ```sh
 sudo beacon
@@ -36,24 +64,27 @@ sudo beacon
 
 ## Crates Used
 
-- dhcp4r - Creates needed structs and matches like Packets, Dhcp Messages etc.
-- nl80211 - Convenient for Enums rather than raw u16 for talking to C Kernel.
-- rand - Generate Random Tokens for Identification
-- socket2 - Used for creating raw sockets
-- rtnetlink - For convenience of creating Raw Commands, may be removed later.
-- tokio - Async runtime
-- serde - Serialization and De-Serialization
-- serde_json - Json serialization and deserialization
-- bincode - Helps with the actual conversion of Serilization and De-Serialization data.
-- neli - Creating raw Netlink Commands
-- ratatui - TUI Library
-- chrono - Tracking time.
+<details>
+<summary>Dependencies</summary>
 
-## Prerequisites
+| Crate                  | Purpose                                    |
+| ---------------------- | ------------------------------------------ |
+| `dhcp4r`               | DHCP packet structures and message parsing |
+| `nl80211`              | nl80211 enums for kernel Wi-Fi subsystem   |
+| `neli`                 | Raw Netlink command creation               |
+| `socket2`              | Raw socket creation                        |
+| `etherparse`           | Ethernet packet parsing and creation       |
+| `ratatui`              | Terminal UI rendering                      |
+| `tokio`                | Async runtime                              |
+| `serde` + `serde_json` | Serialization and deserialization          |
+| `bincode`              | Binary serialization for IPC               |
+| `rand`                 | Random token generation                    |
+| `chrono`               | Timestamps and time tracking               |
 
-- `wpa_supplicant` needs to be installed
+</details>
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
 
 That's it!
-
-This was the description pretty much.
-A Star would be Appreciated.
