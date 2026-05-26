@@ -1,9 +1,4 @@
-use beacon::{
-    DAEMON_ERR_PATH, DAEMON_OUT_PATH,
-    backend::threads::{
-        beacond, spawn_ethernet_connection, spawn_main_loop, spawn_residue_connection,
-    },
-};
+use beacon::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, backend::threads::beacond};
 use clap::Parser;
 use daemonize::Daemonize;
 use std::{
@@ -16,7 +11,7 @@ use beacon::SOCKET_PATH;
 
 #[derive(Parser, Debug)]
 #[command(
-    version = "0.1.0",
+    version = "0.1.1",
     about = "Beacon\nLightweight Wifi Manager made in Rust."
 )]
 struct Args {

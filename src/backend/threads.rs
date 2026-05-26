@@ -4,14 +4,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    thread,
     time::Duration,
 };
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
-    sync::Mutex as Amutex,
 };
 
 use chrono::Utc;
@@ -23,7 +21,7 @@ use crate::{
     types::InterfaceType,
     wifi::{
         dhcp_connection::DhcpStorage,
-        helper::{autoconnect, get_family_info, get_scan, manage_lease_thread},
+        helper::{autoconnect, get_family_info, manage_lease_thread},
         wpa_supplicant::connect_via_ethernet,
     },
 };
@@ -101,12 +99,14 @@ pub async fn spawn_autoconnection(
             let family_info = get_family_info().unwrap();
             let mut connected = false;
             loop {
-                let hosts_res = get_scan(family_info.id, iface.ifindex.unwrap_or_default()).ok();
+                let hosts_res = list_active_signals(&family_info, iface.clone()).ok();
 
                 if let Some(hosts) = hosts_res {
                     let list = reject_list.lock().unwrap();
 
-                    autoconnect(&hosts, &iface, &list, &mut connected);
+                    if let Err(e) = autoconnect(&hosts, &iface, &list, &mut connected) {
+                        println!("Autoconnection Error: {:#?}", e.to_string());
+                    };
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -176,10 +176,10 @@ pub async fn beacond() -> Result<(), Box<dyn Error>> {
     spawn_ethernet_connection()?;
     spawn_residue_connection()?;
     if let Err(e) = spawn_autoconnection(reject_list_clone).await {
-        println!("Error in Autoconnect: {}", e.to_string());
+        println!("Error in Autoconnect: {}", e);
     };
     if let Err(e) = spawn_main_loop(Arc::clone(&reject_list)).await {
-        println!("Error in Main Loop: {}", e.to_string());
+        println!("Error in Main Loop: {}", e);
     }
     Ok(())
 }

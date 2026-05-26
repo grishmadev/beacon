@@ -1,17 +1,14 @@
-use crate::backend::functions::{connect_to, list_active_signals};
+use crate::backend::functions::connect_to;
 use crate::mac_to_bytes;
-use crate::types::{
-    Connection, CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType,
-};
-use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
+use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
+use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::history::list_saved_networks;
 use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
-use chrono::{DateTime, MappedLocalTime, TimeZone, Utc};
+use chrono::Utc;
 use dhcp4r::packet::Packet;
-use libc::{AF_NETLINK, NETLINK_ROUTE, RTM_DELADDR, RTMGRP_LINK, SOCK_RAW, sockaddr_nl};
-use neli::consts::nl::Nlmsg;
+use libc::RTMGRP_LINK;
 use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtmF, Rtn, Rtprot};
 use neli::err::Nlmsgerr;
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, RtattrBuilder, RtmsgBuilder};
@@ -33,12 +30,10 @@ use neli::{
     types::{Buffer, GenlBuffer},
     utils::Groups,
 };
-use socket2::{Domain, SockAddr, SockAddrStorage, Socket, Type};
+use socket2::SockAddr;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::net::Ipv4Addr;
-use std::os::fd::AsRawFd;
-use std::thread;
 use std::time::Duration;
 use std::{error::Error, io::Cursor, path::Path};
 
@@ -355,7 +350,7 @@ pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
                             }
                         }
                         Ifla::Operstate => {
-                            let payload = attr.rta_payload().as_ref();
+                            // let payload = attr.rta_payload().as_ref();
                             // println!("operstate: {:#?}", payload);
                         }
                         _ => {}
@@ -1085,7 +1080,7 @@ pub fn autoconnect(
         );
         let iface = iface.clone();
         if let Err(e) = connect_to(&iface, host, &Some(password), None) {
-            println!("Connection Error 2: {}", e.to_string());
+            println!("Connection Error: {}", e);
         };
         Ok(())
     } else {

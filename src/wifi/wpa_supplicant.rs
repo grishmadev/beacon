@@ -6,40 +6,32 @@ use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
+use std::slice;
 use std::time::{Duration, Instant};
-use std::{slice, thread};
 
-use daemonize::Group;
 use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
 use etherparse::PacketBuilder;
 use neli::attr::Attribute;
 use neli::consts::nl::NlmF;
-use neli::consts::rtnl::{
-    Arphrd, Ifa, IfaF, Iff, RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot,
-};
+use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
 use neli::consts::socket::{Msg, NlFamily};
 use neli::nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder};
-use neli::rtnl::{
-    IfaddrmsgBuilder, Ifinfomsg, IfinfomsgBuilder, Rtattr, RtattrBuilder, Rtmsg, RtmsgBuilder,
-};
+use neli::rtnl::{Rtmsg, RtmsgBuilder};
 use neli::socket::NlSocket;
-use neli::socket::synchronous::NlSocketHandle;
-use neli::types::{Buffer, RtBuffer};
+use neli::types::RtBuffer;
 use neli::utils::Groups;
 use neli::{FromBytes, ToBytes};
-use rtnetlink::{Handle, new_connection};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::backend::functions::list_interfaces;
 use crate::mac_to_bytes;
 use crate::types::{DhcpLease, Interface};
-use crate::wifi::dhcp_connection::{DhcpFile, DhcpStorage};
+use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::helper::{
-    add_addr, create_packet_sockaddr, generate_client_id, get_current_ip, get_gateway_ip,
-    get_iface_mac, get_interfaces, manage_lease_thread, remove_lease_and_gateway_ip,
-    return_on_disconnect, set_default_route, set_iface_up, setup_iface, validate_packet,
-    validate_packet_v2,
+    add_addr, create_packet_sockaddr, get_current_ip, get_gateway_ip, get_interfaces,
+    manage_lease_thread, remove_lease_and_gateway_ip, return_on_disconnect, set_default_route,
+    set_iface_up, validate_packet_v2,
 };
 
 pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
@@ -57,7 +49,7 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     // connect to server
     skt.connect(&server_path).map_err(|_| {
         format!(
-            "wpa_supplicant not running. Start it first:\n  
+            "wpa_supplicant not running. Start it first:\n
                        sudo wpa_supplicant -B -i {} -c /etc/wpa_supplicant.conf",
             ifname
         )
@@ -315,9 +307,8 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     // };
     // }
     println!("Removing lease and gateway IP");
-    thread::spawn(move || {
-        remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
-    });
+    // thread::spawn(move || {});
+    let _ = remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
     println!("Removed Lease IP");
     let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
@@ -369,26 +360,26 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
         for attr in attrs.iter() {
             // let res_buf = attr.rta_payload();
             match attr.rta_type() {
-                Rta::Table => {
-                    let table = attr.get_payload_as::<u8>()?;
-                    // cwrite("table: {:?}", table);
-                }
-                Rta::Priority => {
-                    let priority = attr.get_payload_as::<u16>()?;
-                    // cwrite("priority: {:?}", priority);
-                }
+                // Rta::Table => {
+                //     let table = attr.get_payload_as::<u8>()?;
+                //     // cwrite("table: {:?}", table);
+                // }
+                // Rta::Priority => {
+                //     let priority = attr.get_payload_as::<u16>()?;
+                //     // cwrite("priority: {:?}", priority);
+                // }
                 Rta::Oif => {
                     ifindex = Some(attr.get_payload_as::<u32>()?);
                     // cwrite("Interface Index (OIF): {:?}", ifindex);
                 }
-                Rta::Gateway => {
-                    let gateway = attr.get_payload_as::<[u8; 4]>()?;
-                    // cwrite("Gateway IP: {:?}", gateway);
-                }
-                Rta::Prefsrc => {
-                    let src = attr.get_payload_as::<[u8; 4]>()?;
-                    // cwrite("Preferred Source IP: {:?}", src);
-                }
+                // Rta::Gateway => {
+                //     let gateway = attr.get_payload_as::<[u8; 4]>()?;
+                //     // cwrite("Gateway IP: {:?}", gateway);
+                // }
+                // Rta::Prefsrc => {
+                //     let src = attr.get_payload_as::<[u8; 4]>()?;
+                //     // cwrite("Preferred Source IP: {:?}", src);
+                // }
                 _ => {}
             }
         }
