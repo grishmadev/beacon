@@ -1,7 +1,7 @@
 use std::{
     error::Error,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    fs::{self, OpenOptions},
+    io::Write,
     net::Ipv4Addr,
     path::Path,
 };

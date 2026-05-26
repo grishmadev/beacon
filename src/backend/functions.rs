@@ -22,7 +22,8 @@ pub fn list_active_signals(
         return Ok(Vec::new());
     }
     let ifindex = interface.ifindex.unwrap();
-    trigger_scan(family_info, ifindex).unwrap();
+    trigger_scan(family_info, ifindex)
+        .map_err(|e| format!("Trigger scan failed: {}", e))?;
     let hosts = get_scan(family_id, ifindex)?;
     // let logs = format!(
     //     "hosts for {:?} {:?}",
@@ -98,8 +99,7 @@ pub fn connect_to(
             add_connection_to_history(connection).unwrap();
         }
         Err(e) => {
-            println!("Connection Error: {:#?}", e);
-            return Ok(());
+            return Err(format!("Connection Error: {:#?}", e).into());
         }
     };
     Ok(())
@@ -109,14 +109,16 @@ pub fn disconnect_connection(
     ifname: &str,
     reject_list: Option<Arc<Mutex<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let family_info = get_family_info().unwrap();
+    let family_info = get_family_info()
+        .map_err(|e| format!("Failed to get family info: {}", e))?;
     if disconnect(ifname, true).is_ok() {
         if let Some(current) = get_current(family_info.id)? {
-            let ssid = current.ssid.unwrap();
-            if let Some(list) = reject_list {
-                let mut guard = list.lock().unwrap();
-                if let Some(idx) = guard.iter().position(|f| f == &ssid) {
-                    guard.remove(idx);
+            if let Some(ssid) = current.ssid {
+                if let Some(list) = reject_list {
+                    let mut guard = list.lock().unwrap();
+                    if let Some(idx) = guard.iter().position(|f| f == &ssid) {
+                        guard.remove(idx);
+                    }
                 }
             }
         } else {

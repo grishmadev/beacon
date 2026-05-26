@@ -170,15 +170,12 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
 
     // tokio::spawn(connection);
 
-    // Async Function
     println!("Applying Network Configurations.");
-    if let Err(e) = apply_network_config(
-        &socket,
-        *ifindex,
-        host_data.ip_addr.unwrap(),
-        host_data.gateway.unwrap(),
-    ) {
-        println!("Err: {}", e);
+    let ip_addr = host_data.ip_addr.unwrap();
+    if let Some(gateway) = host_data.gateway {
+        if let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway) {
+            println!("Err: {}", e);
+        }
     }
 
     set_dns(host_data.dns_servers)?;
@@ -489,7 +486,6 @@ pub fn request_host_wireless(
     }
 
     let timeout = Instant::now();
-    // let mut buf = [0u8; 4096];
     let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
     let mut result = DhcpLease::default();
     loop {
@@ -499,26 +495,23 @@ pub fn request_host_wireless(
         }
         match socket.recv(&mut buf) {
             Ok(size) => {
-                // let raw_data = &buf[..size];
                 let raw_data = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
                 let packet = match validate_packet_v2(raw_data, size)? {
-                    Some(s) => {
-                        println!("Packet successful");
-                        s
-                    }
+                    Some(s) => s,
                     None => {
-                        println!("Conversion Error");
                         continue;
                     }
                 };
                 if packet.xid != request_packet.xid {
                     continue;
                 }
+                let mut is_ack = false;
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknwoledgeeed");
+                                println!("Server acknowledged");
+                                is_ack = true;
                                 result.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
                                 } else {
@@ -526,7 +519,8 @@ pub fn request_host_wireless(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused to (Ack)nowledge.");
+                                println!("Server Refused to Acknowledge.");
+                                break;
                             }
                             _ => {}
                         },
@@ -540,10 +534,13 @@ pub fn request_host_wireless(
                         _ => {}
                     }
                 }
-                result.offer = Some(request_packet);
+                if is_ack {
+                    result.offer = Some(request_packet);
+                    DhcpStorage::write_from_dhcplease(&result, ifname.clone())?;
+                    return Ok(result);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("WouldBlock Error");
                 continue;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -555,25 +552,8 @@ pub fn request_host_wireless(
                 return Err(e.into());
             }
         }
-        DhcpStorage::write_from_dhcplease(&result, ifname.clone())?;
-        return Ok(result);
     }
-    Err("Exited".into())
-}
-
-fn find_saved_networks(
-    send_cmd: &impl Fn(&str) -> Result<String, Box<dyn Error>>,
-    target_ssid: &str,
-) -> Result<Option<String>, Box<dyn Error>> {
-    let networks = send_cmd("LIST_NETWORKS")?;
-
-    for line in networks.lines().skip(1) {
-        let col: Vec<&str> = line.splitn(4, '\t').collect();
-        if col.len() >= 2 && col[1] == target_ssid {
-            return Ok(Some(col[0].to_string()));
-        }
-    }
-    Ok(None)
+    Err("Failed to receive DHCP ACK.".into())
 }
 
 fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn Error>> {
@@ -680,16 +660,13 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                     }
 
                     for option in packet.options {
-                        // checking if offer answered
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
                                     println!("Offered IP: {:?}", packet.yiaddr);
                                     ip_addr = Some(packet.yiaddr);
                                 }
-                                _ => {
-                                    println!("Didnt find desired message.");
-                                }
+                                _ => continue,
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
                             DhcpOption::Router(routers) if !routers.is_empty() => {
@@ -701,28 +678,27 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                             _ => {}
                         };
                     }
+                    if ip_addr.is_some() {
+                        let result = DhcpLease {
+                            ip_addr,
+                            subnet_mask,
+                            dns_servers: dns_servers.unwrap_or(vec![]),
+                            server_id,
+                            lease_duration,
+                            gateway,
+                            offer: Some(msg),
+                        };
+                        return Ok(result);
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // no packets keep waiting.
-                    println!("Getting WouldBlock Errors");
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 Err(e) => {
-                    // cwrite("Kernel Error: {:?}", e);
                     return Err(e.into());
                 }
             }
-            let result = DhcpLease {
-                ip_addr,
-                subnet_mask,
-                dns_servers: dns_servers.unwrap_or(vec![]),
-                server_id,
-                lease_duration,
-                gateway,
-                offer: Some(msg),
-            };
-            return Ok(result);
         }
     }
     Err("Failed after retry.".into())
@@ -789,10 +765,8 @@ pub fn request_host_wired(
     println!("Sub 3");
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
-    // let mut res_buf = [0u8; 2000];
 
     loop {
-        println!("In loop:");
         if timeout.elapsed() >= Duration::from_secs(5) {
             println!("Timeout");
             break;
@@ -802,23 +776,21 @@ pub fn request_host_wired(
                 let raw_data =
                     unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
                 let packet = match validate_packet_v2(raw_data, size)? {
-                    Some(s) => {
-                        println!("Packet successful");
-                        s
-                    }
+                    Some(s) => s,
                     None => {
-                        println!("Conversion Error");
                         continue;
                     }
                 };
                 if packet.xid != msg.xid {
                     continue;
                 }
+                let mut is_ack = false;
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknwoledgeeed");
+                                println!("Server acknowledged");
+                                is_ack = true;
                                 lease.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
                                 } else {
@@ -827,6 +799,7 @@ pub fn request_host_wired(
                             }
                             MessageType::Nak => {
                                 println!("Server Refused to Acknowledge");
+                                break;
                             }
                             _ => {}
                         },
@@ -840,12 +813,13 @@ pub fn request_host_wired(
                         _ => {}
                     }
                 }
-                lease.offer = Some(msg);
-                DhcpStorage::write_from_dhcplease(&lease, ifname)?;
-                return Ok(lease);
+                if is_ack {
+                    lease.offer = Some(msg);
+                    DhcpStorage::write_from_dhcplease(&lease, ifname)?;
+                    return Ok(lease);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("WouldBlock Error");
                 continue;
             }
             Err(e) => {
@@ -854,7 +828,7 @@ pub fn request_host_wired(
             }
         }
     }
-    Err("Failed after retry.".into())
+    Err("Failed to receive DHCP ACK.".into())
 }
 
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {

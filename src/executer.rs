@@ -8,16 +8,13 @@ use std::{
 use crate::{
     Command, Response, SOCKET_PATH,
     backend::{
-        EventCommand,
         functions::{
             connect_to, current_connection, disconnect_connection, list_active_signals,
             list_all_signals,
         },
     },
-    wifi::helper::{autoconnect, get_family_info, get_interfaces},
+    wifi::helper::{get_family_info, get_interfaces},
 };
-use tokio::sync::Mutex as Amutex;
-
 const RETRIES: u32 = 5;
 
 pub fn execute(

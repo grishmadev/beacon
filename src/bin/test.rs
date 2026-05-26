@@ -1,6 +1,6 @@
 use beacon::{
     backend::functions::{list_active_signals, list_interfaces},
-    wifi::helper::{get_current_ip, get_family_info, get_gateway_ip, remove_lease_and_gateway_ip},
+    wifi::helper::{get_current_ip, get_family_info, get_gateway_ip},
 };
 
 #[tokio::main]
@@ -17,31 +17,9 @@ async fn main() {
                 .starts_with("wlo1")
         })
         .unwrap();
-    let ifindex = interface.ifindex.unwrap();
-    let ifname = interface.ifname.clone().unwrap();
     let family_info = get_family_info().unwrap();
-    // let cmd = Command::ListActiveConnections(interface.clone());
-    // let response = execute(&cmd).await.unwrap();
-    // let mac = mac_to_bytes(&interface.mac.clone().unwrap());
-    let current_ip = get_current_ip().unwrap().unwrap();
-    let server_id = get_gateway_ip();
-    println!("current_ip: {:#?}", current_ip);
-    // let res = connect(interface, "刀", "kakakakaka").await;
-    // match return_on_disconnect(ifindex as i32) {
-    //     Ok(_) => {
-    //         if let Err(e) = remove_lease_and_gateway_ip(ifindex, current_ip, server_id.unwrap(), 64)
-    //         {
-    //             eprintln!("test Error: {}", e);
-    //         }
-    //         println!("Disconnected.")
-    //     }
-    //
-    //     Err(e) => {
-    //         println!("Err: {}", e);
-    //     }
-    // };
-    // let res = response(&Command::ListActiveConnections(interface.clone())).await;
-    // println!("Response: {:#?}", res);
+    let _current_ip = get_current_ip().unwrap().unwrap();
+    let _server_id = get_gateway_ip();
     let res = list_active_signals(&family_info, interface.clone());
     println!("Hosts: {:#?}", res);
 }

@@ -71,6 +71,10 @@ impl App {
         let ifaces = self.get_ifaces();
         let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
+            if ifaces.is_empty() {
+                self.iface_index.select(None);
+                return;
+            }
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
                     if s == ifaces.len() - 1 {
@@ -86,6 +90,10 @@ impl App {
             };
             self.iface_index.select(i);
         } else if self.active_tab == Tab::Hosts {
+            if hosts.is_empty() {
+                self.host_index.select(None);
+                return;
+            }
             let mut i = match self.host_index.selected() {
                 Some(s) => {
                     if s == hosts.len() - 1 {
@@ -107,6 +115,10 @@ impl App {
         let ifaces = self.get_ifaces();
         let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
+            if ifaces.is_empty() {
+                self.iface_index.select(None);
+                return;
+            }
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
                     if s == 0 {
@@ -117,11 +129,15 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i > Some(ifaces.len()) {
+            if i >= Some(ifaces.len()) {
                 i = None;
             };
             self.iface_index.select(i);
         } else if self.active_tab == Tab::Hosts {
+            if hosts.is_empty() {
+                self.host_index.select(None);
+                return;
+            }
             let mut i = match self.host_index.selected() {
                 Some(s) => {
                     if s == 0 {
@@ -132,7 +148,7 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i > Some(hosts.len()) {
+            if i >= Some(hosts.len()) {
                 i = None;
             };
             self.host_index.select(i);
