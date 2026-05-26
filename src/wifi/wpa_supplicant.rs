@@ -679,7 +679,6 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
 
                     for option in packet.options {
                         // checking if offer answered
-                        println!("Option data: {:?}", option);
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {

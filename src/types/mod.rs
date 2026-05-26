@@ -116,7 +116,7 @@ impl CurrentConnection {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct DhcpLease {
     pub ip_addr: Option<Ipv4Addr>,
     pub subnet_mask: Option<Ipv4Addr>,
