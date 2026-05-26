@@ -7,6 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::slice;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use dhcp4r::options::{DhcpOption, MessageType};
