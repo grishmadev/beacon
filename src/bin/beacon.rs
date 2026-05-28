@@ -12,7 +12,9 @@ use ratatui::{
     crossterm::{
         event::{self, DisableMouseCapture, Event, KeyCode},
         execute,
-        terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+        terminal::{
+            Clear, ClearType, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        },
     },
     prelude::CrosstermBackend,
 };
@@ -30,6 +32,7 @@ async fn main() {
     };
 }
 async fn main_loop() -> Result<(), Box<dyn Error>> {
+    execute!(io::stdout(), Clear(ClearType::All))?;
     enable_raw_mode()?;
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -143,5 +146,6 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
+    execute!(io::stdout(), Clear(ClearType::All))?;
     Ok(())
 }

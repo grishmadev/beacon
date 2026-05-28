@@ -248,8 +248,10 @@ impl App {
                     && let Some(host) = self.get_hosts().get(selected_host)
                 {
                     if host.is_connected {
-                        if let Some(iface) = self.get_current_interface() {
-                            let _ = sx.send(Command::Disconnect(iface.ifname.unwrap()));
+                        if let Some(iface) = self.get_current_interface()
+                            && let Some(ifname) = iface.ifname
+                        {
+                            let _ = sx.send(Command::Disconnect(ifname));
                         }
                     } else {
                         self.active_tab = Tab::Input;

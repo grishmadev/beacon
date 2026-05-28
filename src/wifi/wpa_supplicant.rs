@@ -18,7 +18,7 @@ use neli::consts::nl::NlmF;
 use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
 use neli::consts::socket::{Msg, NlFamily};
 use neli::nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder};
-use neli::rtnl::{Rtmsg, RtmsgBuilder};
+use neli::rtnl::{RtattrBuilder, Rtmsg, RtmsgBuilder};
 use neli::socket::NlSocket;
 use neli::types::RtBuffer;
 use neli::utils::Groups;
@@ -154,7 +154,7 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     // tokio::spawn(connection);
 
     println!("Applying Network Configurations.");
-    let ip_addr = host_data.ip_addr.unwrap();
+    let ip_addr = host_data.ip_addr.ok_or("No IP address from DHCP.")?;
     if let Some(gateway) = host_data.gateway
         && let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway)
     {
@@ -204,13 +204,13 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .find(|i| i.ifname == Some(ifname.to_string()))
         .ok_or("Interface not found.")?
         .to_owned();
-    let ifindex = iface.ifindex.expect("Coudldn't parse Ifindex.");
-    let mac = mac_to_bytes(&iface.mac.expect("Couldn't parse mac."));
+    let ifindex = iface.ifindex.ok_or("Couldn't parse Ifindex.")?;
+    let mac = mac_to_bytes(&iface.mac.ok_or("Couldn't parse mac.")?);
 
     let ip_addr = get_current_ip(None)?.ok_or("No Current IP found.")?;
     let prefix_len = 32;
 
-    let gateway_ip = get_gateway_ip().expect("Gateway IP not found.");
+    let gateway_ip = get_gateway_ip().ok_or("Gateway IP not found.")?;
 
     wpa_skt
         .connect(&server_path)
@@ -301,56 +301,60 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
     let ifaces = get_interfaces()?;
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
 
+    let mut rtbuf = RtBuffer::new();
+    rtbuf.push(
+        RtattrBuilder::default()
+            .rta_type(Rta::Dst)
+            .rta_payload(vec![8, 8, 8, 8])
+            .build()?,
+    );
+
     let rtmsg = RtmsgBuilder::default()
         .rtm_family(RtAddrFamily::Inet)
-        .rtm_dst_len(0)
+        .rtm_dst_len(32)
         .rtm_src_len(0)
         .rtm_tos(0)
         .rtm_table(RtTable::Main)
         .rtm_protocol(Rtprot::Unspec)
         .rtm_scope(RtScope::Universe)
         .rtm_type(Rtn::Unicast)
-        .rtattrs(RtBuffer::new())
+        .rtattrs(rtbuf)
         .build()?;
 
     let nl_msg = NlmsghdrBuilder::default()
-        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_flags(NlmF::REQUEST)
         .nl_type(Rtm::Getroute)
         .nl_payload(NlPayload::Payload(rtmsg))
         .build()?;
 
     let mut msg_buf = Cursor::new(Vec::<u8>::new());
     nl_msg.to_bytes(&mut msg_buf)?;
+
     socket.send(msg_buf.get_ref(), Msg::empty())?;
 
-    let mut ifindex: Option<u32> = None;
     let mut recv_buf = [0u8; 4096 * 16];
-    loop {
-        let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
-        let mut res_buf = Cursor::new(&recv_buf[..size]);
-        while (res_buf.position() as usize) < size {
-            let res: Nlmsghdr<Rtm, Rtmsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
+    let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
+    let mut res_buf = Cursor::new(&recv_buf[..size]);
+    let res: Nlmsghdr<Rtm, Rtmsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
 
-            if let NlPayload::Err(e) = res.nl_payload() {
-                return Err(format!("Kernel Error: {}", e).into());
-            }
+    if let NlPayload::Err(e) = res.nl_payload() {
+        return Err(format!("Kernel Error: {}", e).into());
+    }
 
-            if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
-                return Ok(ifaces.iter().find(|iface| iface.ifindex == ifindex).cloned());
-            }
-
-            if let NlPayload::Payload(link_info) = res.nl_payload() {
-                if link_info.rtm_dst_len() != &0 {
-                    continue;
-                }
-                for attr in link_info.rtattrs().iter() {
-                    if *attr.rta_type() == Rta::Oif {
-                        ifindex = Some(attr.get_payload_as::<u32>()?);
-                    }
-                }
+    let mut ifindex: Option<u32> = None;
+    if let NlPayload::Payload(link_info) = res.nl_payload() {
+        for attr in link_info.rtattrs().iter() {
+            if *attr.rta_type() == Rta::Oif {
+                ifindex = Some(attr.get_payload_as::<u32>()?);
+                break;
             }
         }
     }
+    let result = ifaces
+        .iter()
+        .find(|iface| iface.ifindex == ifindex)
+        .cloned();
+    Ok(result)
 }
 
 fn apply_network_config(
@@ -403,9 +407,9 @@ pub fn request_host_wireless(
     options.push(DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]));
 
     let xid = rand::random();
-    let mac = iface.mac.as_ref().unwrap();
-    let ifindex = iface.ifindex.as_ref().unwrap();
-    let ifname = iface.ifname.as_ref().unwrap();
+    let mac = iface.mac.as_ref().ok_or("No MAC for interface.")?;
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
     let request_packet = Packet {
         reply: false,
         hops: 0,
@@ -537,9 +541,9 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
 }
 
 pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
-    let ifname = iface.ifname.as_ref().expect("No ifname found.");
-    let ifindex = iface.ifindex.as_ref().expect("No Ifindex found.");
-    let mac = iface.mac.as_ref().expect("No Ifindex found.");
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let mac = iface.mac.as_ref().ok_or("No MAC.")?;
 
     let mac = mac_to_bytes(mac);
     // point it at global broadcast address
@@ -673,9 +677,9 @@ pub fn request_host_wired(
     server_id: Ipv4Addr,
     broadcast: bool,
 ) -> Result<DhcpLease, Box<dyn Error>> {
-    let current_iface = find_active_interface()?.expect("No Active Interface Found.");
-    let ifname = current_iface.ifname.expect("No Ifname found.");
-    let ifindex = current_iface.ifindex.expect("No Ifindex found.");
+    let current_iface = find_active_interface()?.ok_or("No Active Interface Found.")?;
+    let ifname = current_iface.ifname.ok_or("No Ifname.")?;
+    let ifindex = current_iface.ifindex.ok_or("No Ifindex.")?;
     let socket = socket2::Socket::new(
         Domain::PACKET,
         Type::RAW,
@@ -797,9 +801,8 @@ pub fn request_host_wired(
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
-    let ifindex = iface.ifindex.as_ref().unwrap();
-    let ifname = iface.ifname.as_ref().unwrap();
-    // let mac = iface.mac.as_ref().unwrap();
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
     set_iface_up(&socket, *ifindex as i32)?;
 
     let data = discover_host(iface)?;

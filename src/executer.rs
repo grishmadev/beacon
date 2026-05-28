@@ -23,7 +23,7 @@ pub fn execute(
         Command::Ping => Response::Pong,
 
         Command::ListConnections => {
-            let hosts = list_all_signals().unwrap();
+            let hosts = list_all_signals().map_err(|e| format!("Failed to list connections: {}", e))?;
             Response::SavedHosts(hosts)
         }
 
@@ -38,7 +38,7 @@ pub fn execute(
         }
 
         Command::ListInterfaces => {
-            let interfaces = get_interfaces().unwrap();
+            let interfaces = get_interfaces().map_err(|e| format!("Failed to list interfaces: {}", e))?;
             Response::AllInterfaces(interfaces)
         }
 

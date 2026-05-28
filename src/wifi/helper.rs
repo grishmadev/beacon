@@ -380,74 +380,74 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
         let mut recv_buffer = [0u8; 1024 * 64];
         let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
         let mut cursor = Cursor::new(&recv_buffer[..size]);
-        while cursor.position() < size as u64 {
-            let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
-            if let NlPayload::Err(e) = res.nl_payload() {
-                return Err(format!("Kernel Error: {}", e).into());
-            }
+        if let NlPayload::Err(e) = res.nl_payload() {
+            return Err(format!("Kernel Error: {}", e).into());
+        }
 
-            if *res.nl_type() == libc::NLMSG_DONE as u16 {
-                return Ok(None);
-            }
+        if *res.nl_type().to_string() == libc::NLMSG_DONE.to_string() {
+            break;
+        }
 
-            if let NlPayload::Payload(genl) = res.nl_payload() {
-                let mut connection = CurrentConnection::new();
-                for attr in genl.attrs().iter() {
-                    let payload = attr.nla_payload().as_ref();
-                    match Nl80211Attr::from(*attr.nla_type().nla_type()) {
-                        Nl80211Attr::AttrIfname => {
-                            let name = String::from_utf8_lossy(payload)
-                                .trim_end_matches('\0')
-                                .to_string();
-                            connection.ifname = Some(name);
-                        }
-
-                        Nl80211Attr::AttrMac if payload.len() >= 6 => {
-                            let mac = payload[..6]
-                                .iter()
-                                .map(|b| format!("{b:02X}"))
-                                .collect::<Vec<_>>()
-                                .join(":");
-                            connection.mac = Some(mac);
-                        }
-                        Nl80211Attr::AttrIfindex if payload.len() >= 4 => {
-                            let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
-                            connection.ifindex = Some(ifindex);
-                        }
-                        Nl80211Attr::AttrSsid => {
-                            let _ssid = String::from_utf8_lossy(payload).to_string();
-                        }
-
-                        _ => {}
+        if let NlPayload::Payload(genl) = res.nl_payload() {
+            let mut connection = CurrentConnection::new();
+            for attr in genl.attrs().iter() {
+                let payload = attr.nla_payload().as_ref();
+                match Nl80211Attr::from(*attr.nla_type().nla_type()) {
+                    Nl80211Attr::AttrIfname => {
+                        let name = String::from_utf8_lossy(payload)
+                            .trim_end_matches('\0')
+                            .to_string();
+                        connection.ifname = Some(name);
                     }
+
+                    Nl80211Attr::AttrMac if payload.len() >= 6 => {
+                        let mac = payload[..6]
+                            .iter()
+                            .map(|b| format!("{b:02X}"))
+                            .collect::<Vec<_>>()
+                            .join(":");
+                        connection.mac = Some(mac);
+                    }
+                    Nl80211Attr::AttrIfindex if payload.len() >= 4 => {
+                        let ifindex = u32::from_le_bytes(payload[..4].try_into()?);
+                        connection.ifindex = Some(ifindex);
+                    }
+                    Nl80211Attr::AttrSsid => {
+                        let ssid = String::from_utf8_lossy(payload).to_string();
+                        println!("ssid: {}", ssid);
+                    }
+
+                    _ => {}
                 }
-                if let Some(ifindex) = connection.ifindex {
-                    let hosts = get_scan(family_id, ifindex).unwrap_or_default();
-                    match hosts.into_iter().find(|h| h.is_connected) {
-                        Some(host) => {
-                            connection.ssid = host.ssid;
-                            connection.bssid = host.bssid;
-                            connection.frequency = host.frequency;
-                        }
-                        None => return Ok(None),
-                    };
-                }
-                connection.ip_addr = get_current_ip(connection.ifindex).ok().flatten();
-                connection.gateway = get_gateway_ip();
-                if let Ok(files) = DhcpStorage::read_file()
-                    && let Some(edata) = files.first()
-                {
-                    connection.subnet_mask = edata.subnet_mask;
-                    connection.dns_servers = edata.dns_servers.to_owned();
-                    connection.server_id = edata.server_id;
-                    connection.lease_duration = edata.lease_duration;
-                    connection.time_initiated = edata.time_initiated;
-                }
-                return Ok(Some(connection));
             }
+            if let Some(ifindex) = connection.ifindex {
+                let hosts = get_scan(family_id, ifindex).unwrap_or_default();
+                match hosts.into_iter().find(|h| h.is_connected) {
+                    Some(host) => {
+                        connection.ssid = host.ssid;
+                        connection.bssid = host.bssid;
+                        connection.frequency = host.frequency;
+                    }
+                    None => return Ok(None),
+                };
+            }
+            connection.ip_addr = get_current_ip(None).ok().flatten();
+            connection.gateway = get_gateway_ip();
+            if let Ok(files) = DhcpStorage::read_file()
+                && let Some(edata) = files.first()
+            {
+                connection.subnet_mask = edata.subnet_mask;
+                connection.dns_servers = edata.dns_servers.to_owned();
+                connection.server_id = edata.server_id;
+                connection.lease_duration = edata.lease_duration;
+                connection.time_initiated = edata.time_initiated;
+            }
+            return Ok(Some(connection));
         }
     }
+    Ok(None)
 }
 
 pub fn get_current_ip(ifindex: Option<u32>) -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
@@ -455,7 +455,7 @@ pub fn get_current_ip(ifindex: Option<u32>) -> Result<Option<Ipv4Addr>, Box<dyn 
         Some(idx) => idx,
         None => {
             let active_iface = find_active_interface()?.ok_or("Cannot find Active Interface")?;
-            active_iface.ifindex.expect("No Index found.")
+            active_iface.ifindex.ok_or("No Index found.")?
         }
     };
     let socket = NlSocketHandle::connect(NlFamily::Route, None, Groups::empty())?;
@@ -576,15 +576,13 @@ pub fn renew_connection(
     let wired = iface.iftype == InterfaceType::Wired;
     let family_info = get_family_info().unwrap_or_default();
     let family_id = family_info.id;
-    let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
+    let current = get_current(family_id)?.ok_or("Cannot find any current Connection.")?;
 
     // IP for this client (This Device)
-    let current_ip = current.ip_addr.expect("No IP Address found.");
-    let mac = current.mac.expect("No MAC Address found.");
+    let current_ip = current.ip_addr.ok_or("No IP Address found.")?;
+    let mac = current.mac.ok_or("No MAC Address found.")?;
     let mac_address = mac_to_bytes(&mac);
-
-    // IP of the server
-    let server_id = current.server_id.expect("NO Server ID found.");
+    let server_id = current.server_id.ok_or("No Server ID found.")?;
 
     let data = if wired {
         request_host_wired(mac_address, current_ip, server_id, broadcast)?
@@ -929,10 +927,10 @@ pub fn remove_lease_and_gateway_ip(
 // i.e: rebinding leaase
 pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let iface = iface.clone();
+    let ifname = iface.ifname.clone().ok_or("No ifname for lease thread.")?;
     tokio::spawn(async move {
         let mut unicast_renewed = false;
         let mut broadcast_renewed = false;
-        let ifname = iface.ifname.as_ref().unwrap().to_string();
         loop {
             match DhcpStorage::read_file() {
                 Ok(files) => {
@@ -979,12 +977,14 @@ fn manage_lease(
     uni_ren: &mut bool,
     brd_ren: &mut bool,
 ) {
+    let ifname = match iface.ifname.as_ref() {
+        Some(name) => name.to_string(),
+        None => return,
+    };
     let now = Utc::now();
     let t1 = ls_dur / 2;
     let t2 = ls_dur as f64 * 0.875;
     let time_left = now.timestamp() - time_init;
-
-    let ifname = iface.ifname.as_ref().expect("No Ifname found.").to_string();
 
     let data = {
         if time_left > t1 && time_left < t2 as i64 && !*uni_ren {
