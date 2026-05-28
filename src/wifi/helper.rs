@@ -387,7 +387,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 return Err(format!("Kernel Error: {}", e).into());
             }
 
-            if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
+            if *res.nl_type() == libc::NLMSG_DONE as u16 {
                 return Ok(None);
             }
 
@@ -433,14 +433,12 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                         None => return Ok(None),
                     };
                 }
-                if let Some(gateway) = get_gateway_ip()
-                    && let Ok(Some(ip)) = get_current_ip()
-                    && let Ok(files) = DhcpStorage::read_file()
+                connection.ip_addr = get_current_ip(connection.ifindex).ok().flatten();
+                connection.gateway = get_gateway_ip();
+                if let Ok(files) = DhcpStorage::read_file()
                     && let Some(edata) = files.first()
                 {
-                    connection.ip_addr = Some(ip);
                     connection.subnet_mask = edata.subnet_mask;
-                    connection.gateway = Some(gateway);
                     connection.dns_servers = edata.dns_servers.to_owned();
                     connection.server_id = edata.server_id;
                     connection.lease_duration = edata.lease_duration;
@@ -452,9 +450,14 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
     }
 }
 
-pub fn get_current_ip() -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
-    let active_iface = find_active_interface()?.ok_or("Cannot find Active Interface")?;
-    let ifindex = active_iface.ifindex.expect("No Index found.");
+pub fn get_current_ip(ifindex: Option<u32>) -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
+    let ifindex = match ifindex {
+        Some(idx) => idx,
+        None => {
+            let active_iface = find_active_interface()?.ok_or("Cannot find Active Interface")?;
+            active_iface.ifindex.expect("No Index found.")
+        }
+    };
     let socket = NlSocketHandle::connect(NlFamily::Route, None, Groups::empty())?;
     let ifaddrmsg = IfaddrmsgBuilder::default()
         .ifa_family(RtAddrFamily::Inet)
@@ -592,28 +595,6 @@ pub fn renew_connection(
 }
 
 pub fn validate_packet(
-    initialized_data: &[u8],
-    size: usize,
-) -> Result<Option<Packet>, Box<dyn Error>> {
-    if size < 42 {
-        return Ok(None);
-    }
-    if initialized_data[23] != 17 {
-        return Ok(None);
-    }
-    let dest_port = u16::from_be_bytes([initialized_data[36], initialized_data[37]]);
-    if dest_port != 68 {
-        return Ok(None);
-    }
-    if initialized_data[42] != 2 {
-        return Ok(None);
-    };
-    let dhcp_data = &initialized_data[42..];
-    let packet = Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
-    Ok(Some(packet))
-}
-
-pub fn validate_packet_v2(
     initialized_data: &[u8],
     size: usize,
 ) -> Result<Option<Packet>, Box<dyn Error>> {

@@ -25,14 +25,6 @@ pub struct DhcpFile {
 
 pub struct DhcpStorage;
 impl DhcpStorage {
-    pub fn new() -> Result<(), Box<dyn Error>> {
-        OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(DHCPINFO_PATH)?;
-        Ok(())
-    }
     pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error + Send + Sync>> {
         let path = Path::new(DHCPINFO_PATH);
         if !path.exists() || fs::metadata(path)?.len() == 0 {
@@ -44,35 +36,24 @@ impl DhcpStorage {
         Ok(dhcp_lease)
     }
 
-    pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
-        DhcpStorage::empty_out()?;
         content.time_initiated = Utc::now().timestamp();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
-            .unwrap();
-        let mut lease = DhcpStorage::read_file()?;
+        let mut lease = DhcpStorage::read_file().map_err(|e| Box::<dyn Error>::from(format!("{e}")))?;
         if let Some(target_idx) = lease.iter().position(|f| f.ifname == content.ifname) {
             lease[target_idx] = content.clone();
         } else {
             lease.push(content.clone());
         };
         let serialized = bincode::serialize(&lease)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?;
         file.write_all(&serialized)?;
         file.sync_all()?;
         Ok(())
-    }
-    pub fn get_details_of(
-        ifname: String,
-    ) -> Result<Option<DhcpFile>, Box<dyn Error + Send + Sync>> {
-        let files = DhcpStorage::read_file()?;
-        if let Some(file) = files.iter().find(|f| f.ifname == ifname) {
-            return Ok(Some(file.to_owned()));
-        }
-        Ok(None)
     }
     pub fn write_from_dhcplease(data: &DhcpLease, ifname: String) -> Result<(), Box<dyn Error>> {
         let mut content = DhcpFile {
@@ -85,11 +66,11 @@ impl DhcpStorage {
             time_initiated: Utc::now().timestamp(),
             ifname,
         };
-        let _ = DhcpStorage::write_file(&mut content);
+        DhcpStorage::write_file(&mut content)?;
         Ok(())
     }
 
-    pub fn empty_out() -> Result<(), Box<dyn Error + Send + Sync>> {
+    pub fn empty_out() -> Result<(), Box<dyn Error>> {
         let path = Path::new(DHCPINFO_PATH);
         let _ = fs::remove_file(path);
         Ok(())

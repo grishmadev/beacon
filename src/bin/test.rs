@@ -18,7 +18,7 @@ async fn main() {
         })
         .unwrap();
     let family_info = get_family_info().unwrap();
-    let _current_ip = get_current_ip().unwrap().unwrap();
+    let _current_ip = get_current_ip(None).unwrap().unwrap();
     let _server_id = get_gateway_ip();
     let res = list_active_signals(&family_info, interface.clone());
     println!("Hosts: {:#?}", res);

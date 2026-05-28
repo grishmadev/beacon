@@ -32,7 +32,7 @@ use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::helper::{
     add_addr, create_packet_sockaddr, get_current_ip, get_gateway_ip, get_interfaces,
     manage_lease_thread, remove_lease_and_gateway_ip, return_on_disconnect, set_default_route,
-    set_iface_up, validate_packet_v2,
+    set_iface_up, validate_packet,
 };
 
 pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
@@ -56,31 +56,14 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
         )
     })?;
 
-    let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
-        skt.send(cmd.as_bytes())?;
-
-        let mut buf = [0u8; 1024 * 4];
-        while let Ok(size) = skt.recv(&mut buf) {
-            let reply = String::from_utf8_lossy(buf[..size].into())
-                .trim()
-                .to_string();
-            if reply.starts_with('<') {
-                continue;
-            }
-            println!("result: {}", reply);
-            return Ok(reply);
-        }
-        Ok("FAIL".to_string())
-    };
-
-    if send_cmd("PING")? != "PONG" {
+    if send_wpa_cmd(&skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
     }
 
     // remove any previous network
-    let _ = send_cmd("REMOVE_NETWORK all");
+    let _ = send_wpa_cmd(&skt, "REMOVE_NETWORK all");
 
-    if send_cmd("ATTACH")? != "OK" {
+    if send_wpa_cmd(&skt, "ATTACH")? != "OK" {
         return Err("Couldn't connect to wpa_supplicant.".into());
     }
 
@@ -96,32 +79,32 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     // add network
     // check if password exists
     let network_id = {
-        let network_id = send_cmd("ADD_NETWORK")?;
+        let network_id = send_wpa_cmd(&skt, "ADD_NETWORK")?;
 
         let ssid_cmd = format!("SET_NETWORK {} ssid \"{}\"", network_id, ssid);
-        let ssid_ok = send_cmd(&ssid_cmd)?;
+        let ssid_ok = send_wpa_cmd(&skt, &ssid_cmd)?;
         if ssid_ok != "OK" {
             return Err(format!("failed to set SSID. {}", ssid_ok).into());
         }
 
         // set psk
-        let psk_ok = send_cmd(&format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
+        let psk_ok = send_wpa_cmd(&skt, &format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
         if psk_ok != "OK" {
             return Err(format!("failed to set password. {}", psk_ok).into());
         }
 
-        send_cmd("SAVE_CONFIG")?;
+        send_wpa_cmd(&skt, "SAVE_CONFIG")?;
         network_id
     };
     println!("found network: {}", network_id);
 
     // disable other networks incase wpa_supplicant connects to any cached network
-    let disable_ok = send_cmd("DISABLE_NETWORK all")?;
+    let disable_ok = send_wpa_cmd(&skt, "DISABLE_NETWORK all")?;
     if disable_ok != "OK" {
         return Err(format!("Couldn't disable cached networks. {}", disable_ok).into());
     }
 
-    let select_ok = send_cmd(&format!("SELECT_NETWORK {}", network_id))?;
+    let select_ok = send_wpa_cmd(&skt, &format!("SELECT_NETWORK {}", network_id))?;
     if select_ok != "OK" {
         return Err(format!("Couldn't connect to {}. {}", ssid, select_ok).into());
     }
@@ -142,8 +125,8 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
                     println!("Connected.");
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
-                    send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
-                    send_cmd("SAVE_CONFIG")?;
+                    send_wpa_cmd(&skt, &format!("REMOVE_NETWORK {}", network_id))?;
+                    send_wpa_cmd(&skt, "SAVE_CONFIG")?;
                     return Err("Authentication failed. Try Again.".into());
                 } else if event.contains("CTRL-EVENT-NETWORK-NOT-FOUND") {
                     return Err("Network not found, Make sure host is in range.".into());
@@ -172,10 +155,10 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
 
     println!("Applying Network Configurations.");
     let ip_addr = host_data.ip_addr.unwrap();
-    if let Some(gateway) = host_data.gateway {
-        if let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway) {
-            println!("Err: {}", e);
-        }
+    if let Some(gateway) = host_data.gateway
+        && let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway)
+    {
+        println!("Err: {}", e);
     }
 
     set_dns(host_data.dns_servers)?;
@@ -224,7 +207,7 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     let ifindex = iface.ifindex.expect("Coudldn't parse Ifindex.");
     let mac = mac_to_bytes(&iface.mac.expect("Couldn't parse mac."));
 
-    let ip_addr = get_current_ip()?.ok_or("No Current IP found.")?;
+    let ip_addr = get_current_ip(None)?.ok_or("No Current IP found.")?;
     let prefix_len = 32;
 
     let gateway_ip = get_gateway_ip().expect("Gateway IP not found.");
@@ -233,22 +216,6 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
 
-    let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
-        wpa_skt.send(cmd.as_bytes())?;
-
-        let mut buf = [0u8; 1024 * 4];
-        while let Ok(size) = wpa_skt.recv(&mut buf) {
-            let reply = String::from_utf8_lossy(buf[..size].into())
-                .trim()
-                .to_string();
-            if reply.starts_with('<') {
-                continue;
-            }
-            println!("result: {}", reply);
-            return Ok(reply);
-        }
-        Ok("FAIL".to_string())
-    };
     if grace {
         let send_socket = UdpSocket::bind("0.0.0.0:0")?;
         send_socket.set_broadcast(true)?;
@@ -276,15 +243,15 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     // let mut recv_buf = [0u8; 4096];
     // let start = Instant::now();
     // let timeout = Duration::from_secs(5);
-    if send_cmd("PING")? != "PONG" {
+    if send_wpa_cmd(&wpa_skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
     }
 
-    if send_cmd("ATTACH")? != "OK" {
+    if send_wpa_cmd(&wpa_skt, "ATTACH")? != "OK" {
         return Err("Couldn't connect to wpa_supplicant.".into());
     }
 
-    send_cmd("DISCONNECT")?;
+    send_wpa_cmd(&wpa_skt, "DISCONNECT")?;
     // loop {
     //     if start.elapsed() >= timeout {
     //         continue 'outer;
@@ -315,6 +282,21 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn send_wpa_cmd(socket: &UnixDatagram, cmd: &str) -> Result<String, Box<dyn Error>> {
+    socket.send(cmd.as_bytes())?;
+    let mut buf = [0u8; 1024 * 4];
+    while let Ok(size) = socket.recv(&mut buf) {
+        let reply = String::from_utf8_lossy(buf[..size].into())
+            .trim()
+            .to_string();
+        if reply.starts_with('<') {
+            continue;
+        }
+        return Ok(reply);
+    }
+    Ok("FAIL".to_string())
+}
+
 pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
     let ifaces = get_interfaces()?;
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
@@ -339,55 +321,36 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
 
     let mut msg_buf = Cursor::new(Vec::<u8>::new());
     nl_msg.to_bytes(&mut msg_buf)?;
-
     socket.send(msg_buf.get_ref(), Msg::empty())?;
 
-    // let mut check: Rtmsg;
-
-    let mut recv_buf = [0u8; 4096 * 16];
-    let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
-    let mut res_buf = Cursor::new(&recv_buf[..size]);
-    let res: Nlmsghdr<Rtm, Rtmsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
-
-    if let NlPayload::Err(e) = res.nl_payload() {
-        return Err(format!("Kernel Error: {}", e).into());
-    }
-
     let mut ifindex: Option<u32> = None;
-    if let NlPayload::Payload(link_info) = res.nl_payload() {
-        let attrs = link_info.rtattrs();
-        for attr in attrs.iter() {
-            // let res_buf = attr.rta_payload();
-            match attr.rta_type() {
-                // Rta::Table => {
-                //     let table = attr.get_payload_as::<u8>()?;
-                //     // cwrite("table: {:?}", table);
-                // }
-                // Rta::Priority => {
-                //     let priority = attr.get_payload_as::<u16>()?;
-                //     // cwrite("priority: {:?}", priority);
-                // }
-                Rta::Oif => {
-                    ifindex = Some(attr.get_payload_as::<u32>()?);
-                    // cwrite("Interface Index (OIF): {:?}", ifindex);
+    let mut recv_buf = [0u8; 4096 * 16];
+    loop {
+        let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
+        let mut res_buf = Cursor::new(&recv_buf[..size]);
+        while (res_buf.position() as usize) < size {
+            let res: Nlmsghdr<Rtm, Rtmsg> = Nlmsghdr::from_bytes(&mut res_buf)?;
+
+            if let NlPayload::Err(e) = res.nl_payload() {
+                return Err(format!("Kernel Error: {}", e).into());
+            }
+
+            if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
+                return Ok(ifaces.iter().find(|iface| iface.ifindex == ifindex).cloned());
+            }
+
+            if let NlPayload::Payload(link_info) = res.nl_payload() {
+                if link_info.rtm_dst_len() != &0 {
+                    continue;
                 }
-                // Rta::Gateway => {
-                //     let gateway = attr.get_payload_as::<[u8; 4]>()?;
-                //     // cwrite("Gateway IP: {:?}", gateway);
-                // }
-                // Rta::Prefsrc => {
-                //     let src = attr.get_payload_as::<[u8; 4]>()?;
-                //     // cwrite("Preferred Source IP: {:?}", src);
-                // }
-                _ => {}
+                for attr in link_info.rtattrs().iter() {
+                    if *attr.rta_type() == Rta::Oif {
+                        ifindex = Some(attr.get_payload_as::<u32>()?);
+                    }
+                }
             }
         }
     }
-    let result = ifaces
-        .iter()
-        .find(|iface| iface.ifindex == ifindex)
-        .cloned();
-    Ok(result)
 }
 
 fn apply_network_config(
@@ -496,7 +459,7 @@ pub fn request_host_wireless(
         match socket.recv(&mut buf) {
             Ok(size) => {
                 let raw_data = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
-                let packet = match validate_packet_v2(raw_data, size)? {
+                let packet = match validate_packet(raw_data, size)? {
                     Some(s) => s,
                     None => {
                         continue;
@@ -647,7 +610,7 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
-                    let packet = match validate_packet_v2(initialized_data, size)? {
+                    let packet = match validate_packet(initialized_data, size)? {
                         Some(s) => s,
                         None => {
                             continue;
@@ -775,7 +738,7 @@ pub fn request_host_wired(
             Ok(size) => {
                 let raw_data =
                     unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
-                let packet = match validate_packet_v2(raw_data, size)? {
+                let packet = match validate_packet(raw_data, size)? {
                     Some(s) => s,
                     None => {
                         continue;

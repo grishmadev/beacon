@@ -15,74 +15,62 @@ use crate::{
     },
     wifi::helper::{get_family_info, get_interfaces},
 };
-const RETRIES: u32 = 5;
-
 pub fn execute(
     cmd: &Command,
     reject_list: Arc<Mutex<Vec<String>>>,
 ) -> Result<Response, Box<dyn Error + Send + Sync>> {
-    let mut response = Response::Error("Uninitialized Response".into());
+    let response = match cmd {
+        Command::Ping => Response::Pong,
 
-    for _ in 0..RETRIES {
-        response = match cmd {
-            Command::Ping => Response::Pong,
-
-            Command::ListConnections => {
-                let hosts = list_all_signals().unwrap();
-                Response::SavedHosts(hosts)
-            }
-
-            Command::ListActiveConnections(iface) => {
-                let family_info = get_family_info()?;
-                let connections = list_active_signals(&family_info, iface.clone())?;
-                if let Some(ifname) = iface.ifname.clone() {
-                    Response::ActiveHosts(ifname, connections)
-                } else {
-                    Response::Error("Unknown Interface.".into())
-                }
-            }
-
-            Command::ListInterfaces => {
-                let interfaces = get_interfaces().unwrap();
-                Response::AllInterfaces(interfaces.clone())
-            }
-
-            Command::Notification(msg) => Response::Notification(msg.to_owned()),
-            Command::ClearNotification => Response::ClearNotification,
-            Command::Connect {
-                host,
-                iface,
-                password,
-            } => {
-                let list = Arc::clone(&reject_list);
-                match connect_to(iface, host.clone(), password, Some(list)) {
-                    Ok(_) => Response::Connected,
-                    Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
-                }
-            }
-            Command::CurrentConnection => match current_connection() {
-                Ok(curcon) => Response::CurrentConnection(curcon),
-                Err(err) => Response::Error(err.to_string()),
-            },
-
-            Command::Disconnect(ifname) => {
-                let list = Arc::clone(&reject_list);
-                match disconnect_connection(ifname, Some(list)) {
-                    Ok(_) => Response::Disconnected,
-                    Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
-                }
-            }
-
-            Command::Tick => Response::Tick,
-            _ => Response::Error("Unknown Command.".into()),
-        };
-        if let Response::Error(e) = response.clone() {
-            println!("Command not Implemented. {}", e);
-            continue;
-        } else {
-            break;
+        Command::ListConnections => {
+            let hosts = list_all_signals().unwrap();
+            Response::SavedHosts(hosts)
         }
-    }
+
+        Command::ListActiveConnections(iface) => {
+            let family_info = get_family_info()?;
+            let connections = list_active_signals(&family_info, iface.clone())?;
+            if let Some(ifname) = iface.ifname.clone() {
+                Response::ActiveHosts(ifname, connections)
+            } else {
+                Response::Error("Unknown Interface.".into())
+            }
+        }
+
+        Command::ListInterfaces => {
+            let interfaces = get_interfaces().unwrap();
+            Response::AllInterfaces(interfaces)
+        }
+
+        Command::Notification(msg) => Response::Notification(msg.to_owned()),
+        Command::ClearNotification => Response::ClearNotification,
+        Command::Connect {
+            host,
+            iface,
+            password,
+        } => {
+            let list = Arc::clone(&reject_list);
+            match connect_to(iface, host.clone(), password, Some(list)) {
+                Ok(_) => Response::Connected,
+                Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
+            }
+        }
+        Command::CurrentConnection => match current_connection() {
+            Ok(curcon) => Response::CurrentConnection(curcon),
+            Err(err) => Response::Error(err.to_string()),
+        },
+
+        Command::Disconnect(ifname) => {
+            let list = Arc::clone(&reject_list);
+            match disconnect_connection(ifname, Some(list)) {
+                Ok(_) => Response::Disconnected,
+                Err(e) => Response::Error(format!("Couldn't Disconnect. {}", e)),
+            }
+        }
+
+        Command::Tick => Response::Tick,
+        _ => Response::Error("Unknown Command.".into()),
+    };
     Ok(response)
 }
 

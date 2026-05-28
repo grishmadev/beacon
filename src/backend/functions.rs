@@ -113,12 +113,12 @@ pub fn disconnect_connection(
         .map_err(|e| format!("Failed to get family info: {}", e))?;
     if disconnect(ifname, true).is_ok() {
         if let Some(current) = get_current(family_info.id)? {
-            if let Some(ssid) = current.ssid {
-                if let Some(list) = reject_list {
-                    let mut guard = list.lock().unwrap();
-                    if let Some(idx) = guard.iter().position(|f| f == &ssid) {
-                        guard.remove(idx);
-                    }
+            if let Some(ssid) = current.ssid
+                && let Some(list) = reject_list
+            {
+                let mut guard = list.lock().unwrap();
+                if let Some(idx) = guard.iter().position(|f| f == &ssid) {
+                    guard.remove(idx);
                 }
             }
         } else {
