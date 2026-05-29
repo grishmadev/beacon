@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
@@ -71,6 +71,10 @@ impl App {
         let ifaces = self.get_ifaces();
         let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
+            if ifaces.is_empty() {
+                self.iface_index.select(None);
+                return;
+            }
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
                     if s == ifaces.len() - 1 {
@@ -86,6 +90,10 @@ impl App {
             };
             self.iface_index.select(i);
         } else if self.active_tab == Tab::Hosts {
+            if hosts.is_empty() {
+                self.host_index.select(None);
+                return;
+            }
             let mut i = match self.host_index.selected() {
                 Some(s) => {
                     if s == hosts.len() - 1 {
@@ -107,6 +115,10 @@ impl App {
         let ifaces = self.get_ifaces();
         let hosts = self.get_hosts();
         if self.active_tab == Tab::Interface {
+            if ifaces.is_empty() {
+                self.iface_index.select(None);
+                return;
+            }
             let mut i = match self.iface_index.selected() {
                 Some(s) => {
                     if s == 0 {
@@ -117,11 +129,15 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i > Some(ifaces.len()) {
+            if i >= Some(ifaces.len()) {
                 i = None;
             };
             self.iface_index.select(i);
         } else if self.active_tab == Tab::Hosts {
+            if hosts.is_empty() {
+                self.host_index.select(None);
+                return;
+            }
             let mut i = match self.host_index.selected() {
                 Some(s) => {
                     if s == 0 {
@@ -132,7 +148,7 @@ impl App {
                 }
                 None => Some(0),
             };
-            if i > Some(hosts.len()) {
+            if i >= Some(hosts.len()) {
                 i = None;
             };
             self.host_index.select(i);
@@ -185,7 +201,7 @@ impl App {
         None
     }
 
-    pub fn connect(&mut self, sx: &Sender<Command>, host: Host, password: Option<String>) {
+    pub fn connect(&mut self, sx: &UnboundedSender<Command>, host: Host, password: Option<String>) {
         let cmd = if let Some(iface) = self.get_current_interface() {
             Command::Connect {
                 host,
@@ -202,7 +218,7 @@ impl App {
         self.input_text.pop();
     }
 
-    pub fn handle_keys(&mut self, key: KeyEvent, sx: &Sender<Command>) {
+    pub fn handle_keys(&mut self, key: KeyEvent, sx: &UnboundedSender<Command>) {
         match self.active_tab.clone() {
             Tab::Input => match key.code {
                 KeyCode::Char(ch) => {
@@ -228,11 +244,14 @@ impl App {
             s => {
                 if s == Tab::Hosts
                     && let KeyCode::Enter = key.code
+                    && let Some(selected_host) = self.host_index.selected()
+                    && let Some(host) = self.get_hosts().get(selected_host)
                 {
-                    let hosts = self.get_hosts();
-                    if hosts.iter().find(|h| h.is_connected).is_some() {
-                        if let Some(iface) = self.get_current_interface() {
-                            let _ = sx.send(Command::Disconnect(iface.ifname.unwrap()));
+                    if host.is_connected {
+                        if let Some(iface) = self.get_current_interface()
+                            && let Some(ifname) = iface.ifname
+                        {
+                            let _ = sx.send(Command::Disconnect(ifname));
                         }
                     } else {
                         self.active_tab = Tab::Input;

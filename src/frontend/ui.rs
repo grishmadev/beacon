@@ -83,7 +83,9 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         if let Some(ssid) = curcon.ssid {
             add_attr("Host Name", &ssid.to_string());
         }
-        add_attr("Interface", curcon.ifname.as_ref().unwrap());
+        if let Some(ref ifname) = curcon.ifname {
+            add_attr("Interface", ifname);
+        }
         if let Some(ip) = curcon.ip_addr {
             add_attr("IP", &ip.to_string());
         }
@@ -105,7 +107,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         let time_left = Utc
             .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
             .single()
-            .unwrap()
+            .unwrap_or(Utc::now())
             - Utc::now();
         let print_time = if time_left.num_seconds().is_negative() {
             "Loading..."

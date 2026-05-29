@@ -12,16 +12,18 @@ use ratatui::{
     crossterm::{
         event::{self, DisableMouseCapture, Event, KeyCode},
         execute,
-        terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+        terminal::{
+            Clear, ClearType, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+        },
     },
     prelude::CrosstermBackend,
 };
 use std::{
     error::Error,
     io::{self},
-    sync::mpsc,
     time::Duration,
 };
+use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() {
@@ -30,6 +32,7 @@ async fn main() {
     };
 }
 async fn main_loop() -> Result<(), Box<dyn Error>> {
+    execute!(io::stdout(), Clear(ClearType::All))?;
     enable_raw_mode()?;
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -38,12 +41,12 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
     /*
      * commands are given to cmdsx, which are then processed and responses transfered to ressx
      * */
-    let (ressx, resrx) = mpsc::channel::<Response>();
-    let (cmdsx, cmdrx) = mpsc::channel::<Command>();
+    let (ressx, mut resrx) = mpsc::unbounded_channel::<Response>();
+    let (cmdsx, mut cmdrx) = mpsc::unbounded_channel::<Command>();
 
     let ressx_clone = ressx.clone();
     tokio::spawn(async move {
-        while let Ok(cmd) = cmdrx.recv() {
+        while let Some(cmd) = cmdrx.recv().await {
             let ressx = ressx_clone.clone();
             tokio::spawn(async move {
                 match cmd {
@@ -143,5 +146,6 @@ async fn main_loop() -> Result<(), Box<dyn Error>> {
         LeaveAlternateScreen,
         DisableMouseCapture
     )?;
+    execute!(io::stdout(), Clear(ClearType::All))?;
     Ok(())
 }

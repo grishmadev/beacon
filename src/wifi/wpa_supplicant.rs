@@ -18,7 +18,7 @@ use neli::consts::nl::NlmF;
 use neli::consts::rtnl::{RtAddrFamily, RtScope, RtTable, Rta, Rtm, Rtn, Rtprot};
 use neli::consts::socket::{Msg, NlFamily};
 use neli::nl::{NlPayload, Nlmsghdr, NlmsghdrBuilder};
-use neli::rtnl::{Rtmsg, RtmsgBuilder};
+use neli::rtnl::{RtattrBuilder, Rtmsg, RtmsgBuilder};
 use neli::socket::NlSocket;
 use neli::types::RtBuffer;
 use neli::utils::Groups;
@@ -32,7 +32,7 @@ use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::helper::{
     add_addr, create_packet_sockaddr, get_current_ip, get_gateway_ip, get_interfaces,
     manage_lease_thread, remove_lease_and_gateway_ip, return_on_disconnect, set_default_route,
-    set_iface_up, validate_packet_v2,
+    set_iface_up, validate_packet,
 };
 
 pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
@@ -56,31 +56,14 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
         )
     })?;
 
-    let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
-        skt.send(cmd.as_bytes())?;
-
-        let mut buf = [0u8; 1024 * 4];
-        while let Ok(size) = skt.recv(&mut buf) {
-            let reply = String::from_utf8_lossy(buf[..size].into())
-                .trim()
-                .to_string();
-            if reply.starts_with('<') {
-                continue;
-            }
-            println!("result: {}", reply);
-            return Ok(reply);
-        }
-        Ok("FAIL".to_string())
-    };
-
-    if send_cmd("PING")? != "PONG" {
+    if send_wpa_cmd(&skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
     }
 
     // remove any previous network
-    let _ = send_cmd("REMOVE_NETWORK all");
+    let _ = send_wpa_cmd(&skt, "REMOVE_NETWORK all");
 
-    if send_cmd("ATTACH")? != "OK" {
+    if send_wpa_cmd(&skt, "ATTACH")? != "OK" {
         return Err("Couldn't connect to wpa_supplicant.".into());
     }
 
@@ -96,32 +79,32 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     // add network
     // check if password exists
     let network_id = {
-        let network_id = send_cmd("ADD_NETWORK")?;
+        let network_id = send_wpa_cmd(&skt, "ADD_NETWORK")?;
 
         let ssid_cmd = format!("SET_NETWORK {} ssid \"{}\"", network_id, ssid);
-        let ssid_ok = send_cmd(&ssid_cmd)?;
+        let ssid_ok = send_wpa_cmd(&skt, &ssid_cmd)?;
         if ssid_ok != "OK" {
             return Err(format!("failed to set SSID. {}", ssid_ok).into());
         }
 
         // set psk
-        let psk_ok = send_cmd(&format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
+        let psk_ok = send_wpa_cmd(&skt, &format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
         if psk_ok != "OK" {
             return Err(format!("failed to set password. {}", psk_ok).into());
         }
 
-        send_cmd("SAVE_CONFIG")?;
+        send_wpa_cmd(&skt, "SAVE_CONFIG")?;
         network_id
     };
     println!("found network: {}", network_id);
 
     // disable other networks incase wpa_supplicant connects to any cached network
-    let disable_ok = send_cmd("DISABLE_NETWORK all")?;
+    let disable_ok = send_wpa_cmd(&skt, "DISABLE_NETWORK all")?;
     if disable_ok != "OK" {
         return Err(format!("Couldn't disable cached networks. {}", disable_ok).into());
     }
 
-    let select_ok = send_cmd(&format!("SELECT_NETWORK {}", network_id))?;
+    let select_ok = send_wpa_cmd(&skt, &format!("SELECT_NETWORK {}", network_id))?;
     if select_ok != "OK" {
         return Err(format!("Couldn't connect to {}. {}", ssid, select_ok).into());
     }
@@ -142,8 +125,8 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
                     println!("Connected.");
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
-                    send_cmd(&format!("REMOVE_NETWORK {}", network_id))?;
-                    send_cmd("SAVE_CONFIG")?;
+                    send_wpa_cmd(&skt, &format!("REMOVE_NETWORK {}", network_id))?;
+                    send_wpa_cmd(&skt, "SAVE_CONFIG")?;
                     return Err("Authentication failed. Try Again.".into());
                 } else if event.contains("CTRL-EVENT-NETWORK-NOT-FOUND") {
                     return Err("Network not found, Make sure host is in range.".into());
@@ -170,14 +153,11 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
 
     // tokio::spawn(connection);
 
-    // Async Function
     println!("Applying Network Configurations.");
-    if let Err(e) = apply_network_config(
-        &socket,
-        *ifindex,
-        host_data.ip_addr.unwrap(),
-        host_data.gateway.unwrap(),
-    ) {
+    let ip_addr = host_data.ip_addr.ok_or("No IP address from DHCP.")?;
+    if let Some(gateway) = host_data.gateway
+        && let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway)
+    {
         println!("Err: {}", e);
     }
 
@@ -224,34 +204,18 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         .find(|i| i.ifname == Some(ifname.to_string()))
         .ok_or("Interface not found.")?
         .to_owned();
-    let ifindex = iface.ifindex.expect("Coudldn't parse Ifindex.");
-    let mac = mac_to_bytes(&iface.mac.expect("Couldn't parse mac."));
+    let ifindex = iface.ifindex.ok_or("Couldn't parse Ifindex.")?;
+    let mac = mac_to_bytes(&iface.mac.ok_or("Couldn't parse mac.")?);
 
-    let ip_addr = get_current_ip()?.ok_or("No Current IP found.")?;
+    let ip_addr = get_current_ip(None)?.ok_or("No Current IP found.")?;
     let prefix_len = 32;
 
-    let gateway_ip = get_gateway_ip().expect("Gateway IP not found.");
+    let gateway_ip = get_gateway_ip().ok_or("Gateway IP not found.")?;
 
     wpa_skt
         .connect(&server_path)
         .map_err(|_| "wpa_supplicant not running or Wifi is turned off.")?;
 
-    let send_cmd = |cmd: &str| -> Result<String, Box<dyn Error>> {
-        wpa_skt.send(cmd.as_bytes())?;
-
-        let mut buf = [0u8; 1024 * 4];
-        while let Ok(size) = wpa_skt.recv(&mut buf) {
-            let reply = String::from_utf8_lossy(buf[..size].into())
-                .trim()
-                .to_string();
-            if reply.starts_with('<') {
-                continue;
-            }
-            println!("result: {}", reply);
-            return Ok(reply);
-        }
-        Ok("FAIL".to_string())
-    };
     if grace {
         let send_socket = UdpSocket::bind("0.0.0.0:0")?;
         send_socket.set_broadcast(true)?;
@@ -279,15 +243,15 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     // let mut recv_buf = [0u8; 4096];
     // let start = Instant::now();
     // let timeout = Duration::from_secs(5);
-    if send_cmd("PING")? != "PONG" {
+    if send_wpa_cmd(&wpa_skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
     }
 
-    if send_cmd("ATTACH")? != "OK" {
+    if send_wpa_cmd(&wpa_skt, "ATTACH")? != "OK" {
         return Err("Couldn't connect to wpa_supplicant.".into());
     }
 
-    send_cmd("DISCONNECT")?;
+    send_wpa_cmd(&wpa_skt, "DISCONNECT")?;
     // loop {
     //     if start.elapsed() >= timeout {
     //         continue 'outer;
@@ -318,24 +282,47 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn send_wpa_cmd(socket: &UnixDatagram, cmd: &str) -> Result<String, Box<dyn Error>> {
+    socket.send(cmd.as_bytes())?;
+    let mut buf = [0u8; 1024 * 4];
+    while let Ok(size) = socket.recv(&mut buf) {
+        let reply = String::from_utf8_lossy(buf[..size].into())
+            .trim()
+            .to_string();
+        if reply.starts_with('<') {
+            continue;
+        }
+        return Ok(reply);
+    }
+    Ok("FAIL".to_string())
+}
+
 pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
     let ifaces = get_interfaces()?;
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
 
+    let mut rtbuf = RtBuffer::new();
+    rtbuf.push(
+        RtattrBuilder::default()
+            .rta_type(Rta::Dst)
+            .rta_payload(vec![8, 8, 8, 8])
+            .build()?,
+    );
+
     let rtmsg = RtmsgBuilder::default()
         .rtm_family(RtAddrFamily::Inet)
-        .rtm_dst_len(0)
+        .rtm_dst_len(32)
         .rtm_src_len(0)
         .rtm_tos(0)
         .rtm_table(RtTable::Main)
         .rtm_protocol(Rtprot::Unspec)
         .rtm_scope(RtScope::Universe)
         .rtm_type(Rtn::Unicast)
-        .rtattrs(RtBuffer::new())
+        .rtattrs(rtbuf)
         .build()?;
 
     let nl_msg = NlmsghdrBuilder::default()
-        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_flags(NlmF::REQUEST)
         .nl_type(Rtm::Getroute)
         .nl_payload(NlPayload::Payload(rtmsg))
         .build()?;
@@ -344,8 +331,6 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
     nl_msg.to_bytes(&mut msg_buf)?;
 
     socket.send(msg_buf.get_ref(), Msg::empty())?;
-
-    // let mut check: Rtmsg;
 
     let mut recv_buf = [0u8; 4096 * 16];
     let (size, _) = socket.recv(&mut recv_buf, Msg::empty())?;
@@ -358,31 +343,10 @@ pub fn find_active_interface() -> Result<Option<Interface>, Box<dyn Error>> {
 
     let mut ifindex: Option<u32> = None;
     if let NlPayload::Payload(link_info) = res.nl_payload() {
-        let attrs = link_info.rtattrs();
-        for attr in attrs.iter() {
-            // let res_buf = attr.rta_payload();
-            match attr.rta_type() {
-                // Rta::Table => {
-                //     let table = attr.get_payload_as::<u8>()?;
-                //     // cwrite("table: {:?}", table);
-                // }
-                // Rta::Priority => {
-                //     let priority = attr.get_payload_as::<u16>()?;
-                //     // cwrite("priority: {:?}", priority);
-                // }
-                Rta::Oif => {
-                    ifindex = Some(attr.get_payload_as::<u32>()?);
-                    // cwrite("Interface Index (OIF): {:?}", ifindex);
-                }
-                // Rta::Gateway => {
-                //     let gateway = attr.get_payload_as::<[u8; 4]>()?;
-                //     // cwrite("Gateway IP: {:?}", gateway);
-                // }
-                // Rta::Prefsrc => {
-                //     let src = attr.get_payload_as::<[u8; 4]>()?;
-                //     // cwrite("Preferred Source IP: {:?}", src);
-                // }
-                _ => {}
+        for attr in link_info.rtattrs().iter() {
+            if *attr.rta_type() == Rta::Oif {
+                ifindex = Some(attr.get_payload_as::<u32>()?);
+                break;
             }
         }
     }
@@ -443,9 +407,9 @@ pub fn request_host_wireless(
     options.push(DhcpOption::ParameterRequestList(vec![1, 3, 6, 15, 51]));
 
     let xid = rand::random();
-    let mac = iface.mac.as_ref().unwrap();
-    let ifindex = iface.ifindex.as_ref().unwrap();
-    let ifname = iface.ifname.as_ref().unwrap();
+    let mac = iface.mac.as_ref().ok_or("No MAC for interface.")?;
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
     let request_packet = Packet {
         reply: false,
         hops: 0,
@@ -489,7 +453,6 @@ pub fn request_host_wireless(
     }
 
     let timeout = Instant::now();
-    // let mut buf = [0u8; 4096];
     let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
     let mut result = DhcpLease::default();
     loop {
@@ -499,26 +462,23 @@ pub fn request_host_wireless(
         }
         match socket.recv(&mut buf) {
             Ok(size) => {
-                // let raw_data = &buf[..size];
                 let raw_data = unsafe { slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
-                let packet = match validate_packet_v2(raw_data, size)? {
-                    Some(s) => {
-                        println!("Packet successful");
-                        s
-                    }
+                let packet = match validate_packet(raw_data, size)? {
+                    Some(s) => s,
                     None => {
-                        println!("Conversion Error");
                         continue;
                     }
                 };
                 if packet.xid != request_packet.xid {
                     continue;
                 }
+                let mut is_ack = false;
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknwoledgeeed");
+                                println!("Server acknowledged");
+                                is_ack = true;
                                 result.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
                                 } else {
@@ -526,7 +486,8 @@ pub fn request_host_wireless(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused to (Ack)nowledge.");
+                                println!("Server Refused to Acknowledge.");
+                                break;
                             }
                             _ => {}
                         },
@@ -540,10 +501,13 @@ pub fn request_host_wireless(
                         _ => {}
                     }
                 }
-                result.offer = Some(request_packet);
+                if is_ack {
+                    result.offer = Some(request_packet);
+                    DhcpStorage::write_from_dhcplease(&result, ifname.clone())?;
+                    return Ok(result);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("WouldBlock Error");
                 continue;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
@@ -555,25 +519,8 @@ pub fn request_host_wireless(
                 return Err(e.into());
             }
         }
-        DhcpStorage::write_from_dhcplease(&result, ifname.clone())?;
-        return Ok(result);
     }
-    Err("Exited".into())
-}
-
-fn find_saved_networks(
-    send_cmd: &impl Fn(&str) -> Result<String, Box<dyn Error>>,
-    target_ssid: &str,
-) -> Result<Option<String>, Box<dyn Error>> {
-    let networks = send_cmd("LIST_NETWORKS")?;
-
-    for line in networks.lines().skip(1) {
-        let col: Vec<&str> = line.splitn(4, '\t').collect();
-        if col.len() >= 2 && col[1] == target_ssid {
-            return Ok(Some(col[0].to_string()));
-        }
-    }
-    Ok(None)
+    Err("Failed to receive DHCP ACK.".into())
 }
 
 fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn Error>> {
@@ -594,9 +541,9 @@ fn bind_socket_to_device(socket: &UdpSocket, ifname: &str) -> Result<(), Box<dyn
 }
 
 pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
-    let ifname = iface.ifname.as_ref().expect("No ifname found.");
-    let ifindex = iface.ifindex.as_ref().expect("No Ifindex found.");
-    let mac = iface.mac.as_ref().expect("No Ifindex found.");
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let mac = iface.mac.as_ref().ok_or("No MAC.")?;
 
     let mac = mac_to_bytes(mac);
     // point it at global broadcast address
@@ -667,7 +614,7 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                     let initialized_data =
                         unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
 
-                    let packet = match validate_packet_v2(initialized_data, size)? {
+                    let packet = match validate_packet(initialized_data, size)? {
                         Some(s) => s,
                         None => {
                             continue;
@@ -680,16 +627,13 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                     }
 
                     for option in packet.options {
-                        // checking if offer answered
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
                                     println!("Offered IP: {:?}", packet.yiaddr);
                                     ip_addr = Some(packet.yiaddr);
                                 }
-                                _ => {
-                                    println!("Didnt find desired message.");
-                                }
+                                _ => continue,
                             },
                             DhcpOption::DomainNameServer(ips) => dns_servers = Some(ips),
                             DhcpOption::Router(routers) if !routers.is_empty() => {
@@ -701,28 +645,27 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                             _ => {}
                         };
                     }
+                    if ip_addr.is_some() {
+                        let result = DhcpLease {
+                            ip_addr,
+                            subnet_mask,
+                            dns_servers: dns_servers.unwrap_or(vec![]),
+                            server_id,
+                            lease_duration,
+                            gateway,
+                            offer: Some(msg),
+                        };
+                        return Ok(result);
+                    }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // no packets keep waiting.
-                    println!("Getting WouldBlock Errors");
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 Err(e) => {
-                    // cwrite("Kernel Error: {:?}", e);
                     return Err(e.into());
                 }
             }
-            let result = DhcpLease {
-                ip_addr,
-                subnet_mask,
-                dns_servers: dns_servers.unwrap_or(vec![]),
-                server_id,
-                lease_duration,
-                gateway,
-                offer: Some(msg),
-            };
-            return Ok(result);
         }
     }
     Err("Failed after retry.".into())
@@ -734,9 +677,9 @@ pub fn request_host_wired(
     server_id: Ipv4Addr,
     broadcast: bool,
 ) -> Result<DhcpLease, Box<dyn Error>> {
-    let current_iface = find_active_interface()?.expect("No Active Interface Found.");
-    let ifname = current_iface.ifname.expect("No Ifname found.");
-    let ifindex = current_iface.ifindex.expect("No Ifindex found.");
+    let current_iface = find_active_interface()?.ok_or("No Active Interface Found.")?;
+    let ifname = current_iface.ifname.ok_or("No Ifname.")?;
+    let ifindex = current_iface.ifindex.ok_or("No Ifindex.")?;
     let socket = socket2::Socket::new(
         Domain::PACKET,
         Type::RAW,
@@ -789,10 +732,8 @@ pub fn request_host_wired(
     println!("Sub 3");
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
-    // let mut res_buf = [0u8; 2000];
 
     loop {
-        println!("In loop:");
         if timeout.elapsed() >= Duration::from_secs(5) {
             println!("Timeout");
             break;
@@ -801,24 +742,22 @@ pub fn request_host_wired(
             Ok(size) => {
                 let raw_data =
                     unsafe { std::slice::from_raw_parts(res_buf.as_ptr() as *const u8, size) };
-                let packet = match validate_packet_v2(raw_data, size)? {
-                    Some(s) => {
-                        println!("Packet successful");
-                        s
-                    }
+                let packet = match validate_packet(raw_data, size)? {
+                    Some(s) => s,
                     None => {
-                        println!("Conversion Error");
                         continue;
                     }
                 };
                 if packet.xid != msg.xid {
                     continue;
                 }
+                let mut is_ack = false;
                 for option in packet.options {
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknwoledgeeed");
+                                println!("Server acknowledged");
+                                is_ack = true;
                                 lease.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
                                 } else {
@@ -827,6 +766,7 @@ pub fn request_host_wired(
                             }
                             MessageType::Nak => {
                                 println!("Server Refused to Acknowledge");
+                                break;
                             }
                             _ => {}
                         },
@@ -840,12 +780,13 @@ pub fn request_host_wired(
                         _ => {}
                     }
                 }
-                lease.offer = Some(msg);
-                DhcpStorage::write_from_dhcplease(&lease, ifname)?;
-                return Ok(lease);
+                if is_ack {
+                    lease.offer = Some(msg);
+                    DhcpStorage::write_from_dhcplease(&lease, ifname)?;
+                    return Ok(lease);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("WouldBlock Error");
                 continue;
             }
             Err(e) => {
@@ -854,15 +795,14 @@ pub fn request_host_wired(
             }
         }
     }
-    Err("Failed after retry.".into())
+    Err("Failed to receive DHCP ACK.".into())
 }
 
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     // setting up USB ethernet
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
-    let ifindex = iface.ifindex.as_ref().unwrap();
-    let ifname = iface.ifname.as_ref().unwrap();
-    // let mac = iface.mac.as_ref().unwrap();
+    let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
+    let ifname = iface.ifname.as_ref().ok_or("No ifname.")?;
     set_iface_up(&socket, *ifindex as i32)?;
 
     let data = discover_host(iface)?;

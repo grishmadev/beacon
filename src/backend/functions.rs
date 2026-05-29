@@ -21,33 +21,13 @@ pub fn list_active_signals(
     if interface.iftype != InterfaceType::Wireless {
         return Ok(Vec::new());
     }
-    let ifindex = interface.ifindex.unwrap();
-    trigger_scan(family_info, ifindex).unwrap();
+    let ifindex = interface.ifindex.ok_or("No ifindex for interface.")?;
+    trigger_scan(family_info, ifindex)
+        .map_err(|e| format!("Trigger scan failed: {}", e))?;
     let hosts = get_scan(family_id, ifindex)?;
-    // let logs = format!(
-    //     "hosts for {:?} {:?}",
-    //     interface.ifname.clone(),
-    //     hosts.clone()
-    // );
-    // println!("{}", logs);
     result.extend(hosts);
     Ok(result)
 }
-
-// pub fn list_and_connect() -> Result<(), ()> {
-//     let hosts = list_active_signals(family_info, interface)?;
-//     let saved_hosts = list_saved_networks()?;
-//     for host in hosts {
-//         match saved_hosts
-//             .iter()
-//             .find(|h| h.bssid == host.bssid.as_ref().unwrap().to_string())
-//         {
-//             Some(connection) => {}
-//             None => {}
-//         };
-//     }
-//     Ok(())
-// }
 
 pub fn list_all_signals() -> Result<Vec<Connection>, Box<dyn Error>> {
     let networks = list_saved_networks()?;
@@ -62,9 +42,9 @@ pub fn connect_to(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let saved_networks = list_all_signals().unwrap_or_default();
 
-    let found_password_option = saved_networks
-        .iter()
-        .find(|e| &e.bssid == host.bssid.as_ref().unwrap());
+    let found_password_option = host.bssid.as_ref().and_then(|bssid| {
+        saved_networks.iter().find(|e| &e.bssid == bssid)
+    });
     let final_password: String;
     match password {
         Some(val) => {
@@ -79,27 +59,25 @@ pub fn connect_to(
             }
         },
     };
-    let bssid = host.bssid.expect("No BSSID found.");
-    let ssid = host.ssid.expect("Target SSID missing.");
+    let bssid = host.bssid.ok_or("No BSSID found.")?;
+    let ssid = host.ssid.ok_or("Target SSID missing.")?;
     match connect(iface, &ssid, &final_password) {
         Ok(_) => {
-            // saving connection
             let connection = Connection {
                 ssid: ssid.to_string(),
                 bssid: bssid.to_string(),
                 password: final_password,
             };
-            if let Some(list) = reject_list {
-                let mut guard = list.lock().unwrap();
+            if let Some(list) = &reject_list {
+                let mut guard = list.lock().map_err(|e| format!("Lock: {}", e))?;
                 if let Some(idx) = guard.iter().position(|f| f == &ssid) {
                     guard.remove(idx);
                 }
             }
-            add_connection_to_history(connection).unwrap();
+            add_connection_to_history(connection).map_err(|e| format!("{e}"))?;
         }
         Err(e) => {
-            println!("Connection Error: {:#?}", e);
-            return Ok(());
+            return Err(format!("Connection Error: {:#?}", e).into());
         }
     };
     Ok(())
@@ -109,12 +87,14 @@ pub fn disconnect_connection(
     ifname: &str,
     reject_list: Option<Arc<Mutex<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let family_info = get_family_info().unwrap();
+    let family_info = get_family_info()
+        .map_err(|e| format!("Failed to get family info: {}", e))?;
     if disconnect(ifname, true).is_ok() {
         if let Some(current) = get_current(family_info.id)? {
-            let ssid = current.ssid.unwrap();
-            if let Some(list) = reject_list {
-                let mut guard = list.lock().unwrap();
+            if let Some(ssid) = current.ssid
+                && let Some(list) = reject_list
+            {
+                let mut guard = list.lock().map_err(|e| format!("Lock: {}", e))?;
                 if let Some(idx) = guard.iter().position(|f| f == &ssid) {
                     guard.remove(idx);
                 }
@@ -132,7 +112,7 @@ pub fn list_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
 }
 
 pub fn current_connection() -> Result<Option<CurrentConnection>, Box<dyn Error>> {
-    let family_info = get_family_info().unwrap();
+    let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
     let family_id = family_info.id;
     let info = get_current(family_id)?;
     Ok(info)

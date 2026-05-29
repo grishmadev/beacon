@@ -97,11 +97,8 @@ pub fn get_family_info() -> Result<FamilyInfo, Box<dyn Error + Send + Sync>> {
                 family_info.id = id;
             }
             if *attr.nla_type().nla_type() == CtrlAttr::FamilyName {
-                let name_arr: [u8; 8] = attr.get_payload_as()?;
-                let name = name_arr
-                    .iter()
-                    .map(|x| *x as char)
-                    .collect::<String>()
+                let payload = attr.nla_payload().as_ref();
+                let name = String::from_utf8_lossy(payload)
                     .trim_end_matches('\0')
                     .to_string();
                 family_info.name = name;
@@ -185,102 +182,97 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 
     let mut recv_buffer = [0u8; 4096 * 16];
 
-    let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
-    let mut cursor = Cursor::new(&recv_buffer[..size]);
-    while cursor.position() < size as u64 {
-        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
+    loop {
+        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+        let mut cursor = Cursor::new(&recv_buffer[..size]);
+        while cursor.position() < size as u64 {
+            let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
-        if let NlPayload::Err(e) = res.nl_payload() {
-            return Err(format!("Kernel Error: {}", e).into());
-        }
+            if let NlPayload::Err(e) = res.nl_payload() {
+                return Err(format!("Kernel Error: {}", e).into());
+            }
 
-        if *res.nl_type() == libc::NLMSG_DONE as u16 {
-            // return Ok(result);
-            continue;
-        }
+            if *res.nl_type() == libc::NLMSG_DONE as u16 {
+                return Ok(result);
+            }
 
-        if let NlPayload::Payload(genl) = res.nl_payload() {
-            let attrs = genl.attrs();
+            if let NlPayload::Payload(genl) = res.nl_payload() {
+                let attrs = genl.attrs();
 
-            for attr in attrs.iter() {
-                let typ = Nl80211Attr::from(*attr.nla_type().nla_type());
-                if typ == Nl80211Attr::AttrBss {
-                    let bss_bytes = attr.nla_payload().as_ref();
+                for attr in attrs.iter() {
+                    let typ = Nl80211Attr::from(*attr.nla_type().nla_type());
+                    if typ == Nl80211Attr::AttrBss {
+                        let bss_bytes = attr.nla_payload().as_ref();
 
-                    let mut bss_cursor = Cursor::new(bss_bytes);
-                    // parsing the nested byte as a flatlsit
-                    // initialize Host
-                    let mut target = Host::new();
+                        let mut bss_cursor = Cursor::new(bss_bytes);
+                        let mut target = Host::new();
 
-                    while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut bss_cursor) {
-                        match Nl80211Bss::from(*nested.nla_type().nla_type()) {
-                            Nl80211Bss::BssBssid => {
-                                let bytes = nested.nla_payload().as_ref();
-                                // Mac Address
-                                if bytes.len() >= 6 {
-                                    let mac = bytes[..6]
-                                        .iter()
-                                        .map(|b| format!("{b:02X}"))
-                                        .collect::<Vec<_>>()
-                                        .join(":");
-                                    target.set_bssid(mac);
-                                }
-                            }
-
-                            Nl80211Bss::BssFrequency => {
-                                let bytes = nested.nla_payload().as_ref();
-                                if bytes.len() >= 4 {
-                                    let freq = u32::from_le_bytes(bytes[..4].try_into()?);
-                                    target.set_frequency(freq);
-                                }
-                            }
-
-                            Nl80211Bss::BssSignalMbm => {
-                                let bytes = nested.nla_payload().as_ref();
-                                if bytes.len() >= 4 {
-                                    // kernel returns milli-dBm
-                                    let signal = i32::from_le_bytes(bytes[..4].try_into()?) / 100;
-                                    target.set_signal(signal);
-                                }
-                            }
-
-                            Nl80211Bss::BssInformationElements => {
-                                let ies = nested.nla_payload().as_ref();
-                                let mut i = 0;
-                                while i + 1 < ies.len() {
-                                    let tag = ies[i];
-                                    let len = ies[i + 1] as usize;
-                                    if i + 2 + len > ies.len() {
-                                        break;
+                        while let Ok(nested) = Nlattr::<u16, Buffer>::from_bytes(&mut bss_cursor) {
+                            match Nl80211Bss::from(*nested.nla_type().nla_type()) {
+                                Nl80211Bss::BssBssid => {
+                                    let bytes = nested.nla_payload().as_ref();
+                                    if bytes.len() >= 6 {
+                                        let mac = bytes[..6]
+                                            .iter()
+                                            .map(|b| format!("{b:02X}"))
+                                            .collect::<Vec<_>>()
+                                            .join(":");
+                                        target.set_bssid(mac);
                                     }
-                                    if tag == 0 {
-                                        let ssid =
-                                            String::from_utf8_lossy(&ies[i + 2..i + 2 + len])
-                                                .to_string();
-                                        target.set_ssid(ssid);
+                                }
+
+                                Nl80211Bss::BssFrequency => {
+                                    let bytes = nested.nla_payload().as_ref();
+                                    if bytes.len() >= 4 {
+                                        let freq = u32::from_le_bytes(bytes[..4].try_into()?);
+                                        target.set_frequency(freq);
                                     }
-                                    i += 2 + len;
                                 }
-                            }
 
-                            Nl80211Bss::BssStatus => {
-                                let payload = nested.nla_payload().as_ref();
-                                if payload.len() >= 4 {
-                                    let status = u32::from_le_bytes(payload[..4].try_into()?);
-                                    target.is_connected = status == 1;
+                                Nl80211Bss::BssSignalMbm => {
+                                    let bytes = nested.nla_payload().as_ref();
+                                    if bytes.len() >= 4 {
+                                        let signal = i32::from_le_bytes(bytes[..4].try_into()?) / 100;
+                                        target.set_signal(signal);
+                                    }
                                 }
-                            }
 
-                            _ => {}
+                                Nl80211Bss::BssInformationElements => {
+                                    let ies = nested.nla_payload().as_ref();
+                                    let mut i = 0;
+                                    while i + 1 < ies.len() {
+                                        let tag = ies[i];
+                                        let len = ies[i + 1] as usize;
+                                        if i + 2 + len > ies.len() {
+                                            break;
+                                        }
+                                        if tag == 0 {
+                                            let ssid =
+                                                String::from_utf8_lossy(&ies[i + 2..i + 2 + len])
+                                                    .to_string();
+                                            target.set_ssid(ssid);
+                                        }
+                                        i += 2 + len;
+                                    }
+                                }
+
+                                Nl80211Bss::BssStatus => {
+                                    let payload = nested.nla_payload().as_ref();
+                                    if payload.len() >= 4 {
+                                        let status = u32::from_le_bytes(payload[..4].try_into()?);
+                                        target.is_connected = status == 1;
+                                    }
+                                }
+
+                                _ => {}
+                            }
                         }
+                        result.push(target);
                     }
-                    // add target to result
-                    result.push(target);
                 }
             }
         }
     }
-    Ok(result)
 }
 
 pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
@@ -318,7 +310,7 @@ pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
                 return Err(format!("Kernel Error: {}", e).into());
             }
 
-            if u16::from(*res.nl_type()).to_string() == libc::NLMSG_DONE.to_string() {
+            if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
                 return Ok(result);
             }
 
@@ -441,14 +433,12 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     None => return Ok(None),
                 };
             }
-            if let Some(gateway) = get_gateway_ip()
-                && let Ok(Some(ip)) = get_current_ip()
-                && let Ok(files) = DhcpStorage::read_file()
+            connection.ip_addr = get_current_ip(None).ok().flatten();
+            connection.gateway = get_gateway_ip();
+            if let Ok(files) = DhcpStorage::read_file()
                 && let Some(edata) = files.first()
             {
-                connection.ip_addr = Some(ip);
                 connection.subnet_mask = edata.subnet_mask;
-                connection.gateway = Some(gateway);
                 connection.dns_servers = edata.dns_servers.to_owned();
                 connection.server_id = edata.server_id;
                 connection.lease_duration = edata.lease_duration;
@@ -460,9 +450,14 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
     Ok(None)
 }
 
-pub fn get_current_ip() -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
-    let active_iface = find_active_interface()?.expect("Cannot find Active INterface");
-    let ifindex = active_iface.ifindex.expect("No Index found.");
+pub fn get_current_ip(ifindex: Option<u32>) -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
+    let ifindex = match ifindex {
+        Some(idx) => idx,
+        None => {
+            let active_iface = find_active_interface()?.ok_or("Cannot find Active Interface")?;
+            active_iface.ifindex.ok_or("No Index found.")?
+        }
+    };
     let socket = NlSocketHandle::connect(NlFamily::Route, None, Groups::empty())?;
     let ifaddrmsg = IfaddrmsgBuilder::default()
         .ifa_family(RtAddrFamily::Inet)
@@ -515,7 +510,7 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
         .build()?;
     let ifindex_attr = NlattrBuilder::default()
         .nla_type(attr_type)
-        .nla_payload(ifindex)
+        .nla_payload(ifindex.to_ne_bytes().to_vec())
         .build()?;
 
     let mut genl_buffer = GenlBuffer::new();
@@ -581,15 +576,13 @@ pub fn renew_connection(
     let wired = iface.iftype == InterfaceType::Wired;
     let family_info = get_family_info().unwrap_or_default();
     let family_id = family_info.id;
-    let current = get_current(family_id)?.expect("Cannot find any current Connnection :(");
+    let current = get_current(family_id)?.ok_or("Cannot find any current Connection.")?;
 
     // IP for this client (This Device)
-    let current_ip = current.ip_addr.expect("No IP Address found.");
-    let mac = current.mac.expect("No MAC Address found.");
+    let current_ip = current.ip_addr.ok_or("No IP Address found.")?;
+    let mac = current.mac.ok_or("No MAC Address found.")?;
     let mac_address = mac_to_bytes(&mac);
-
-    // IP of the server
-    let server_id = current.server_id.expect("NO Server ID found.");
+    let server_id = current.server_id.ok_or("No Server ID found.")?;
 
     let data = if wired {
         request_host_wired(mac_address, current_ip, server_id, broadcast)?
@@ -600,28 +593,6 @@ pub fn renew_connection(
 }
 
 pub fn validate_packet(
-    initialized_data: &[u8],
-    size: usize,
-) -> Result<Option<Packet>, Box<dyn Error>> {
-    if size < 42 {
-        return Ok(None);
-    }
-    if initialized_data[23] != 17 {
-        return Ok(None);
-    }
-    let dest_port = u16::from_be_bytes([initialized_data[36], initialized_data[37]]);
-    if dest_port != 68 {
-        return Ok(None);
-    }
-    if initialized_data[42] != 2 {
-        return Ok(None);
-    };
-    let dhcp_data = &initialized_data[42..];
-    let packet = Packet::from(dhcp_data).map_err(|_| "Failed to parse DHCP Packet.")?;
-    Ok(Some(packet))
-}
-
-pub fn validate_packet_v2(
     initialized_data: &[u8],
     size: usize,
 ) -> Result<Option<Packet>, Box<dyn Error>> {
@@ -956,10 +927,10 @@ pub fn remove_lease_and_gateway_ip(
 // i.e: rebinding leaase
 pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let iface = iface.clone();
+    let ifname = iface.ifname.clone().ok_or("No ifname for lease thread.")?;
     tokio::spawn(async move {
         let mut unicast_renewed = false;
         let mut broadcast_renewed = false;
-        let ifname = iface.ifname.as_ref().unwrap().to_string();
         loop {
             match DhcpStorage::read_file() {
                 Ok(files) => {
@@ -1006,12 +977,14 @@ fn manage_lease(
     uni_ren: &mut bool,
     brd_ren: &mut bool,
 ) {
+    let ifname = match iface.ifname.as_ref() {
+        Some(name) => name.to_string(),
+        None => return,
+    };
     let now = Utc::now();
     let t1 = ls_dur / 2;
     let t2 = ls_dur as f64 * 0.875;
     let time_left = now.timestamp() - time_init;
-
-    let ifname = iface.ifname.as_ref().expect("No Ifname found.").to_string();
 
     let data = {
         if time_left > t1 && time_left < t2 as i64 && !*uni_ren {
@@ -1053,16 +1026,14 @@ pub fn autoconnect(
         let mut connection: Option<Host> = None;
         let mut pass: Option<String> = None;
 
-        // Checking if host is already in reject list
         for ahost in hosts.iter() {
-            if reject_list
-                .iter()
-                .any(|f| f == ahost.ssid.as_ref().unwrap())
-            {
+            let Some(ref ssid) = ahost.ssid else { continue };
+            if reject_list.iter().any(|f| f == ssid) {
                 continue;
             }
+            let Some(ref bssid) = ahost.bssid else { continue };
             for shost in saved_connections.iter() {
-                if &shost.bssid == ahost.bssid.as_ref().unwrap() {
+                if &shost.bssid == bssid {
                     connection = Some(ahost.clone());
                     pass = Some(shost.password.clone());
                     break;
@@ -1074,10 +1045,8 @@ pub fn autoconnect(
         (connection, pass)
     };
     if let (Some(host), Some(password)) = conpas {
-        println!(
-            "Found Saved Network.\n Connecting to {}",
-            host.ssid.as_ref().unwrap()
-        );
+        let ssid_display = host.ssid.as_deref().unwrap_or("?");
+        println!("Found Saved Network.\n Connecting to {}", ssid_display);
         let iface = iface.clone();
         if let Err(e) = connect_to(&iface, host, &Some(password), None) {
             println!("Connection Error: {}", e);

@@ -1,7 +1,6 @@
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    net::Ipv4Addr,
     path::Path,
 };
 
@@ -35,11 +34,11 @@ pub fn add_connection_to_history(connection: Connection) -> Result<(), Box<dyn E
     Ok(())
 }
 
-pub fn delete_connection_from_history(bssid: Ipv4Addr) -> Result<(), Box<dyn Error>> {
+pub fn delete_connection_from_history(bssid: &str) -> Result<(), Box<dyn Error>> {
     let mut connections = list_saved_networks()?;
 
     let original_len = connections.len();
-    connections.retain(|c| c.bssid != bssid.to_string());
+    connections.retain(|c| c.bssid != bssid);
 
     // Only write if something actually changed
     if connections.len() != original_len {
