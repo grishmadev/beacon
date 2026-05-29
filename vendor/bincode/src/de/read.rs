@@ -1,202 +1,112 @@
-use error::Result;
-use serde;
-use std::io;
+//! This module contains reader-based structs and traits.
+//!
+//! Because `std::io::Read` is only limited to `std` and not `core`, we provide 2 alternative readers.
+//!
+//! [Reader] is a reader for sources that do not own their data. It is assumed that the reader's data is dropped after the `read` method is called. This reader is incapable of reading borrowed data, like `&str` and `&[u8]`.
+//!
+//! [BorrowReader] is an extension of `Reader` that also allows returning borrowed data. A `BorrowReader` allows reading `&str` and `&[u8]`.
+//!
+//! Specifically the `Reader` trait is used by [Decode] and the `BorrowReader` trait is used by `[BorrowDecode]`.
+//!
+//! [Decode]: ../trait.Decode.html
+//! [BorrowDecode]: ../trait.BorrowDecode.html
 
-/// An optional Read trait for advanced Bincode usage.
-///
-/// It is highly recommended to use bincode with `io::Read` or `&[u8]` before
-/// implementing a custom `BincodeRead`.
-///
-/// The forward_read_* methods are necessary because some byte sources want
-/// to pass a long-lived borrow to the visitor and others want to pass a
-/// transient slice.
-pub trait BincodeRead<'storage>: io::Read {
-    /// Check that the next `length` bytes are a valid string and pass
-    /// it on to the serde reader.
-    fn forward_read_str<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'storage>;
+use crate::error::DecodeError;
 
-    /// Transfer ownership of the next `length` bytes to the caller.
-    fn get_byte_buffer(&mut self, length: usize) -> Result<Vec<u8>>;
+/// A reader for owned data. See the module documentation for more information.
+pub trait Reader {
+    /// Fill the given `bytes` argument with values. Exactly the length of the given slice must be filled, or else an error must be returned.
+    fn read(&mut self, bytes: &mut [u8]) -> Result<(), DecodeError>;
 
-    /// Pass a slice of the next `length` bytes on to the serde reader.
-    fn forward_read_bytes<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'storage>;
+    /// If this reader wraps a buffer of any kind, this function lets callers access contents of
+    /// the buffer without passing data through a buffer first.
+    #[inline]
+    fn peek_read(&mut self, _: usize) -> Option<&[u8]> {
+        None
+    }
+
+    /// If an implementation of `peek_read` is provided, an implementation of this function
+    /// must be provided so that subsequent reads or peek-reads do not return the same bytes
+    #[inline]
+    fn consume(&mut self, _: usize) {}
 }
 
-/// A BincodeRead implementation for byte slices
+impl<T> Reader for &mut T
+where
+    T: Reader,
+{
+    #[inline]
+    fn read(&mut self, bytes: &mut [u8]) -> Result<(), DecodeError> {
+        (**self).read(bytes)
+    }
+
+    #[inline]
+    fn peek_read(&mut self, n: usize) -> Option<&[u8]> {
+        (**self).peek_read(n)
+    }
+
+    #[inline]
+    fn consume(&mut self, n: usize) {
+        (*self).consume(n)
+    }
+}
+
+/// A reader for borrowed data. Implementors of this must also implement the [Reader] trait. See the module documentation for more information.
+pub trait BorrowReader<'storage>: Reader {
+    /// Read exactly `length` bytes and return a slice to this data. If not enough bytes could be read, an error should be returned.
+    ///
+    /// *note*: Exactly `length` bytes must be returned. If less bytes are returned, bincode may panic. If more bytes are returned, the excess bytes may be discarded.
+    fn take_bytes(&mut self, length: usize) -> Result<&'storage [u8], DecodeError>;
+}
+
+/// A reader type for `&[u8]` slices. Implements both [Reader] and [BorrowReader], and thus can be used for borrowed data.
 pub struct SliceReader<'storage> {
-    slice: &'storage [u8],
-}
-
-/// A BincodeRead implementation for `io::Read`ers
-pub struct IoReader<R> {
-    reader: R,
-    temp_buffer: Vec<u8>,
+    pub(crate) slice: &'storage [u8],
 }
 
 impl<'storage> SliceReader<'storage> {
     /// Constructs a slice reader
-    pub(crate) fn new(bytes: &'storage [u8]) -> SliceReader<'storage> {
+    pub const fn new(bytes: &'storage [u8]) -> SliceReader<'storage> {
         SliceReader { slice: bytes }
     }
+}
 
+impl<'storage> Reader for SliceReader<'storage> {
     #[inline(always)]
-    fn get_byte_slice(&mut self, length: usize) -> Result<&'storage [u8]> {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<(), DecodeError> {
+        if bytes.len() > self.slice.len() {
+            return Err(DecodeError::UnexpectedEnd {
+                additional: bytes.len() - self.slice.len(),
+            });
+        }
+        let (read_slice, remaining) = self.slice.split_at(bytes.len());
+        bytes.copy_from_slice(read_slice);
+        self.slice = remaining;
+
+        Ok(())
+    }
+
+    #[inline]
+    fn peek_read(&mut self, n: usize) -> Option<&'storage [u8]> {
+        self.slice.get(..n)
+    }
+
+    #[inline]
+    fn consume(&mut self, n: usize) {
+        self.slice = self.slice.get(n..).unwrap_or_default();
+    }
+}
+
+impl<'storage> BorrowReader<'storage> for SliceReader<'storage> {
+    #[inline(always)]
+    fn take_bytes(&mut self, length: usize) -> Result<&'storage [u8], DecodeError> {
         if length > self.slice.len() {
-            return Err(SliceReader::unexpected_eof());
+            return Err(DecodeError::UnexpectedEnd {
+                additional: length - self.slice.len(),
+            });
         }
         let (read_slice, remaining) = self.slice.split_at(length);
         self.slice = remaining;
         Ok(read_slice)
-    }
-
-    pub(crate) fn is_finished(&self) -> bool {
-        self.slice.is_empty()
-    }
-}
-
-impl<R> IoReader<R> {
-    /// Constructs an IoReadReader
-    pub(crate) fn new(r: R) -> IoReader<R> {
-        IoReader {
-            reader: r,
-            temp_buffer: vec![],
-        }
-    }
-}
-
-impl<'storage> io::Read for SliceReader<'storage> {
-    #[inline(always)]
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if out.len() > self.slice.len() {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        let (read_slice, remaining) = self.slice.split_at(out.len());
-        out.copy_from_slice(read_slice);
-        self.slice = remaining;
-
-        Ok(out.len())
-    }
-
-    #[inline(always)]
-    fn read_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
-        self.read(out).map(|_| ())
-    }
-}
-
-impl<R: io::Read> io::Read for IoReader<R> {
-    #[inline(always)]
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(out)
-    }
-    #[inline(always)]
-    fn read_exact(&mut self, out: &mut [u8]) -> io::Result<()> {
-        self.reader.read_exact(out)
-    }
-}
-
-impl<'storage> SliceReader<'storage> {
-    #[inline(always)]
-    fn unexpected_eof() -> Box<::ErrorKind> {
-        Box::new(::ErrorKind::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "",
-        )))
-    }
-}
-
-impl<'storage> BincodeRead<'storage> for SliceReader<'storage> {
-    #[inline(always)]
-    fn forward_read_str<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'storage>,
-    {
-        use ErrorKind;
-        let string = match ::std::str::from_utf8(self.get_byte_slice(length)?) {
-            Ok(s) => s,
-            Err(e) => return Err(ErrorKind::InvalidUtf8Encoding(e).into()),
-        };
-        visitor.visit_borrowed_str(string)
-    }
-
-    #[inline(always)]
-    fn get_byte_buffer(&mut self, length: usize) -> Result<Vec<u8>> {
-        self.get_byte_slice(length).map(|x| x.to_vec())
-    }
-
-    #[inline(always)]
-    fn forward_read_bytes<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'storage>,
-    {
-        visitor.visit_borrowed_bytes(self.get_byte_slice(length)?)
-    }
-}
-
-impl<R> IoReader<R>
-where
-    R: io::Read,
-{
-    fn fill_buffer(&mut self, length: usize) -> Result<()> {
-        self.temp_buffer.resize(length, 0);
-
-        self.reader.read_exact(&mut self.temp_buffer)?;
-
-        Ok(())
-    }
-}
-
-impl<'a, R> BincodeRead<'a> for IoReader<R>
-where
-    R: io::Read,
-{
-    fn forward_read_str<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'a>,
-    {
-        self.fill_buffer(length)?;
-
-        let string = match ::std::str::from_utf8(&self.temp_buffer[..]) {
-            Ok(s) => s,
-            Err(e) => return Err(::ErrorKind::InvalidUtf8Encoding(e).into()),
-        };
-
-        visitor.visit_str(string)
-    }
-
-    fn get_byte_buffer(&mut self, length: usize) -> Result<Vec<u8>> {
-        self.fill_buffer(length)?;
-        Ok(::std::mem::replace(&mut self.temp_buffer, Vec::new()))
-    }
-
-    fn forward_read_bytes<V>(&mut self, length: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'a>,
-    {
-        self.fill_buffer(length)?;
-        visitor.visit_bytes(&self.temp_buffer[..])
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::IoReader;
-
-    #[test]
-    fn test_fill_buffer() {
-        let buffer = vec![0u8; 64];
-        let mut reader = IoReader::new(buffer.as_slice());
-
-        reader.fill_buffer(20).unwrap();
-        assert_eq!(20, reader.temp_buffer.len());
-
-        reader.fill_buffer(30).unwrap();
-        assert_eq!(30, reader.temp_buffer.len());
-
-        reader.fill_buffer(5).unwrap();
-        assert_eq!(5, reader.temp_buffer.len());
     }
 }

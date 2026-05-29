@@ -1,9 +1,10 @@
 use std::net::Ipv4Addr;
 
+use bincode::{Decode, Encode};
 use dhcp4r::packet::Packet;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Encode, Decode, PartialEq, Eq)]
 pub struct Host {
     pub bssid: Option<String>,
     pub ssid: Option<String>,
@@ -40,7 +41,7 @@ impl Host {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, PartialEq, Clone, Encode, Decode, Deserialize, Serialize)]
 pub struct Connection {
     pub ssid: String,
     pub bssid: String,
@@ -54,7 +55,7 @@ pub struct FamilyInfo {
     pub scan_group_id: u32,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
 pub enum InterfaceType {
     Wireless,
     Wired,
@@ -63,7 +64,7 @@ pub enum InterfaceType {
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Decode, Encode)]
 pub struct Interface {
     pub ifindex: Option<u32>,
     pub ifname: Option<String>,
@@ -93,7 +94,7 @@ impl Interface {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Decode, Encode)]
 pub struct CurrentConnection {
     pub ifname: Option<String>,
     pub ifindex: Option<u32>,

@@ -5,13 +5,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use bincode::config;
+
 use crate::{
     Command, Response, SOCKET_PATH,
-    backend::{
-        functions::{
-            connect_to, current_connection, disconnect_connection, list_active_signals,
-            list_all_signals,
-        },
+    backend::functions::{
+        connect_to, current_connection, disconnect_connection, list_active_signals,
+        list_all_signals,
     },
     wifi::helper::{get_family_info, get_interfaces},
 };
@@ -23,7 +23,8 @@ pub fn execute(
         Command::Ping => Response::Pong,
 
         Command::ListConnections => {
-            let hosts = list_all_signals().map_err(|e| format!("Failed to list connections: {}", e))?;
+            let hosts =
+                list_all_signals().map_err(|e| format!("Failed to list connections: {}", e))?;
             Response::SavedHosts(hosts)
         }
 
@@ -38,7 +39,8 @@ pub fn execute(
         }
 
         Command::ListInterfaces => {
-            let interfaces = get_interfaces().map_err(|e| format!("Failed to list interfaces: {}", e))?;
+            let interfaces =
+                get_interfaces().map_err(|e| format!("Failed to list interfaces: {}", e))?;
             Response::AllInterfaces(interfaces)
         }
 
@@ -76,13 +78,13 @@ pub fn execute(
 
 pub async fn response(cmd: &Command) -> Result<Response, Box<dyn Error>> {
     let mut socket = UnixStream::connect(SOCKET_PATH)?;
-    let serialized = bincode::serialize(&cmd)?;
+    let serialized = bincode::encode_to_vec(cmd, config::standard())?;
     socket.write_all(&serialized)?;
     socket.shutdown(std::net::Shutdown::Write)?;
 
     let mut buffer = Vec::new();
     let size = socket.read_to_end(&mut buffer)?;
 
-    let deserialzed: Response = bincode::deserialize(&buffer[..size])?;
-    Ok(deserialzed)
+    let (deserialized, _) = bincode::decode_from_slice(&buffer[..size], config::standard())?;
+    Ok(deserialized)
 }

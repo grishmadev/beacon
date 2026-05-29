@@ -1,515 +1,334 @@
-use config::{BincodeByteOrder, Options};
-use std::io::Read;
+//! Decoder-based structs and traits.
 
-use self::read::{BincodeRead, IoReader, SliceReader};
-use byteorder::ReadBytesExt;
-use config::{IntEncoding, SizeLimit};
-use serde;
-use serde::de::Error as DeError;
-use serde::de::IntoDeserializer;
-use {Error, ErrorKind, Result};
+mod decoder;
+mod impl_core;
+mod impl_tuples;
+mod impls;
 
-/// Specialized ways to read data into bincode.
+use self::{
+    decoder::WithContext,
+    read::{BorrowReader, Reader},
+};
+use crate::{
+    config::{Config, InternalLimitConfig},
+    error::DecodeError,
+    utils::Sealed,
+};
+
 pub mod read;
 
-/// A Deserializer that reads bytes from a buffer.
+pub use self::decoder::DecoderImpl;
+
+/// Trait that makes a type able to be decoded, akin to serde's `DeserializeOwned` trait.
 ///
-/// This struct should rarely be used.
-/// In most cases, prefer the `deserialize_from` function.
+/// Some types may require specific contexts. For example, to decode arena-based collections, an arena allocator must be provided as a context. In these cases, the context type `Context` should be specified or bounded.
 ///
-/// The ByteOrder that is chosen will impact the endianness that
-/// is used to read integers out of the reader.
+/// This trait should be implemented for types which do not have references to data in the reader. For types that contain e.g. `&str` and `&[u8]`, implement [BorrowDecode] instead.
 ///
-/// ```ignore
-/// let d = Deserializer::new(&mut some_reader, SizeLimit::new());
-/// serde::Deserialize::deserialize(&mut deserializer);
-/// let bytes_read = d.bytes_read();
+/// Whenever you derive `Decode` for your type, the base trait `BorrowDecode` is automatically implemented.
+///
+/// This trait will be automatically implemented with unbounded `Context` if you enable the `derive` feature and add `#[derive(bincode::Decode)]` to your type. Note that if the type contains any lifetimes, `BorrowDecode` will be implemented instead.
+///
+/// # Implementing this trait manually
+///
+/// If you want to implement this trait for your type, the easiest way is to add a `#[derive(bincode::Decode)]`, build and check your `target/generated/bincode/` folder. This should generate a `<Struct name>_Decode.rs` file.
+///
+/// For this struct:
+///
 /// ```
-pub struct Deserializer<R, O: Options> {
-    pub(crate) reader: R,
-    options: O,
+/// struct Entity {
+///     pub x: f32,
+///     pub y: f32,
+/// }
+/// ```
+///
+/// It will look something like:
+///
+/// ```
+/// # struct Entity {
+/// #     pub x: f32,
+/// #     pub y: f32,
+/// # }
+/// impl<Context> bincode::Decode<Context> for Entity {
+///     fn decode<D: bincode::de::Decoder<Context = Context>>(
+///         decoder: &mut D,
+///     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+///         Ok(Self {
+///             x: bincode::Decode::decode(decoder)?,
+///             y: bincode::Decode::decode(decoder)?,
+///         })
+///     }
+/// }
+/// impl<'de, Context> bincode::BorrowDecode<'de, Context> for Entity {
+///     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+///         decoder: &mut D,
+///     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+///         Ok(Self {
+///             x: bincode::BorrowDecode::borrow_decode(decoder)?,
+///             y: bincode::BorrowDecode::borrow_decode(decoder)?,
+///         })
+///     }
+/// }
+/// ```
+///
+/// From here you can add/remove fields, or add custom logic.
+///
+/// To get specific integer types, you can use:
+/// ```
+/// # struct Foo;
+/// # impl<Context> bincode::Decode<Context> for Foo {
+/// #     fn decode<D: bincode::de::Decoder<Context = Context>>(
+/// #         decoder: &mut D,
+/// #     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+/// let x: u8 = bincode::Decode::<Context>::decode(decoder)?;
+/// let x = <u8 as bincode::Decode::<Context>>::decode(decoder)?;
+/// #         Ok(Foo)
+/// #     }
+/// # }
+/// # bincode::impl_borrow_decode!(Foo);
+/// ```
+///
+/// You can use `Context` to require contexts for decoding a type:
+/// ```
+/// # /// # use bumpalo::Bump;
+/// use bincode::de::Decoder;
+/// use bincode::error::DecodeError;
+/// struct BytesInArena<'a>(bumpalo::collections::Vec<'a, u8>);
+/// impl<'a> bincode::Decode<&'a bumpalo::Bump> for BytesInArena<'a> {
+/// fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+///         todo!()
+///     }
+/// # }
+/// ```
+pub trait Decode<Context>: Sized {
+    /// Attempt to decode this type with the given [Decode].
+    fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError>;
 }
 
-macro_rules! impl_deserialize_literal {
-    ($name:ident : $ty:ty = $read:ident()) => {
-        #[inline]
-        pub(crate) fn $name(&mut self) -> Result<$ty> {
-            self.read_literal_type::<$ty>()?;
-            self.reader
-                .$read::<<O::Endian as BincodeByteOrder>::Endian>()
-                .map_err(Into::into)
+/// Trait that makes a type able to be decoded, akin to serde's `Deserialize` trait.
+///
+/// This trait should be implemented for types that contain borrowed data, like `&str` and `&[u8]`. If your type does not have borrowed data, consider implementing [Decode] instead.
+///
+/// This trait will be automatically implemented if you enable the `derive` feature and add `#[derive(bincode::Decode)]` to a type with a lifetime.
+pub trait BorrowDecode<'de, Context>: Sized {
+    /// Attempt to decode this type with the given [BorrowDecode].
+    fn borrow_decode<D: BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError>;
+}
+
+/// Helper macro to implement `BorrowDecode` for any type that implements `Decode`.
+#[macro_export]
+macro_rules! impl_borrow_decode {
+    ($ty:ty $(, $param:tt)*) => {
+        impl<'de $(, $param)*, __Context> $crate::BorrowDecode<'de, __Context> for $ty {
+            fn borrow_decode<D: $crate::de::BorrowDecoder<'de, Context = __Context>>(
+                decoder: &mut D,
+            ) -> core::result::Result<Self, $crate::error::DecodeError> {
+                $crate::Decode::decode(decoder)
+            }
         }
     };
 }
 
-impl<'de, IR: Read, O: Options> Deserializer<IoReader<IR>, O> {
-    /// Creates a new Deserializer with a given `Read`er and options.
-    pub fn with_reader(r: IR, options: O) -> Self {
-        Deserializer {
-            reader: IoReader::new(r),
-            options,
-        }
-    }
-}
-
-impl<'de, O: Options> Deserializer<SliceReader<'de>, O> {
-    /// Creates a new Deserializer that will read from the given slice.
-    pub fn from_slice(slice: &'de [u8], options: O) -> Self {
-        Deserializer {
-            reader: SliceReader::new(slice),
-            options,
-        }
-    }
-}
-
-impl<'de, R: BincodeRead<'de>, O: Options> Deserializer<R, O> {
-    /// Creates a new Deserializer with the given `BincodeRead`er
-    pub fn with_bincode_read(r: R, options: O) -> Deserializer<R, O> {
-        Deserializer { reader: r, options }
-    }
-
-    pub(crate) fn deserialize_byte(&mut self) -> Result<u8> {
-        self.read_literal_type::<u8>()?;
-        self.reader.read_u8().map_err(Into::into)
-    }
-
-    impl_deserialize_literal! { deserialize_literal_u16 : u16 = read_u16() }
-    impl_deserialize_literal! { deserialize_literal_u32 : u32 = read_u32() }
-    impl_deserialize_literal! { deserialize_literal_u64 : u64 = read_u64() }
-
-    serde_if_integer128! {
-        impl_deserialize_literal! { deserialize_literal_u128 : u128 = read_u128() }
-    }
-
-    fn read_bytes(&mut self, count: u64) -> Result<()> {
-        self.options.limit().add(count)
-    }
-
-    fn read_literal_type<T>(&mut self) -> Result<()> {
-        use std::mem::size_of;
-        self.read_bytes(size_of::<T>() as u64)
-    }
-
-    fn read_vec(&mut self) -> Result<Vec<u8>> {
-        let len = O::IntEncoding::deserialize_len(self)?;
-        self.read_bytes(len as u64)?;
-        self.reader.get_byte_buffer(len)
-    }
-
-    fn read_string(&mut self) -> Result<String> {
-        let vec = self.read_vec()?;
-        String::from_utf8(vec).map_err(|e| ErrorKind::InvalidUtf8Encoding(e.utf8_error()).into())
-    }
-}
-
-macro_rules! impl_deserialize_int {
-    ($name:ident = $visitor_method:ident ($dser_method:ident)) => {
-        #[inline]
-        fn $name<V>(self, visitor: V) -> Result<V::Value>
-        where
-            V: serde::de::Visitor<'de>,
-        {
-            visitor.$visitor_method(O::IntEncoding::$dser_method(self)?)
+/// Helper macro to implement `BorrowDecode` for any type that implements `Decode`.
+#[macro_export]
+macro_rules! impl_borrow_decode_with_context {
+    ($ty:ty, $context:ty $(, $param:tt)*) => {
+        impl<'de $(, $param)*> $crate::BorrowDecode<'de, $context> for $ty {
+            fn borrow_decode<D: $crate::de::BorrowDecoder<'de, Context = $context>>(
+                decoder: &mut D,
+            ) -> core::result::Result<Self, $crate::error::DecodeError> {
+                $crate::Decode::decode(decoder)
+            }
         }
     };
 }
 
-impl<'de, 'a, R, O> serde::Deserializer<'de> for &'a mut Deserializer<R, O>
+/// Any source that can decode basic types. This type is most notably implemented for [Decoder].
+pub trait Decoder: Sealed {
+    /// The concrete [Reader] type
+    type R: Reader;
+
+    /// The concrete [Config] type
+    type C: Config;
+
+    /// The decoding context type
+    type Context;
+
+    /// Returns the decoding context
+    fn context(&mut self) -> &mut Self::Context;
+
+    /// Wraps decoder with a context
+    fn with_context<C>(&mut self, context: C) -> WithContext<Self, C> {
+        WithContext {
+            decoder: self,
+            context,
+        }
+    }
+
+    /// Returns a mutable reference to the reader
+    fn reader(&mut self) -> &mut Self::R;
+
+    /// Returns a reference to the config
+    fn config(&self) -> &Self::C;
+
+    /// Claim that `n` bytes are going to be read from the decoder.
+    /// This can be used to validate `Configuration::Limit<N>()`.
+    fn claim_bytes_read(&mut self, n: usize) -> Result<(), DecodeError>;
+
+    /// Claim that we're going to read a container which contains `len` entries of `T`.
+    /// This will correctly handle overflowing if `len * size_of::<T>() > usize::max_value`
+    fn claim_container_read<T>(&mut self, len: usize) -> Result<(), DecodeError> {
+        if <Self::C as InternalLimitConfig>::LIMIT.is_some() {
+            match len.checked_mul(core::mem::size_of::<T>()) {
+                Some(val) => self.claim_bytes_read(val),
+                None => Err(DecodeError::LimitExceeded),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Notify the decoder that `n` bytes are being reclaimed.
+    ///
+    /// When decoding container types, a typical implementation would claim to read `len * size_of::<T>()` bytes.
+    /// This is to ensure that bincode won't allocate several GB of memory while constructing the container.
+    ///
+    /// Because the implementation claims `len * size_of::<T>()`, but then has to decode each `T`, this would be marked
+    /// as double. This function allows us to un-claim each `T` that gets decoded.
+    ///
+    /// We cannot check if `len * size_of::<T>()` is valid without claiming it, because this would mean that if you have
+    /// a nested container (e.g. `Vec<Vec<T>>`), it does not know how much memory is already claimed, and could easily
+    /// allocate much more than the user intends.
+    /// ```
+    /// # use bincode::de::{Decode, Decoder};
+    /// # use bincode::error::DecodeError;
+    /// # struct Container<T>(Vec<T>);
+    /// # impl<T> Container<T> {
+    /// #     fn with_capacity(cap: usize) -> Self {
+    /// #         Self(Vec::with_capacity(cap))
+    /// #     }
+    /// #     
+    /// #     fn push(&mut self, t: T) {
+    /// #         self.0.push(t);
+    /// #     }
+    /// # }
+    /// impl<Context, T: Decode<Context>> Decode<Context> for Container<T> {
+    ///     fn decode<D: Decoder<Context = Context>>(decoder: &mut D) -> Result<Self, DecodeError> {
+    ///         let len = u64::decode(decoder)?;
+    ///         let len: usize = len.try_into().map_err(|_| DecodeError::OutsideUsizeRange(len))?;
+    ///         // Make sure we don't allocate too much memory
+    ///         decoder.claim_bytes_read(len * core::mem::size_of::<T>());
+    ///
+    ///         let mut result = Container::with_capacity(len);
+    ///         for _ in 0..len {
+    ///             // un-claim the memory
+    ///             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+    ///             result.push(T::decode(decoder)?)
+    ///         }
+    ///         Ok(result)
+    ///     }
+    /// }
+    /// impl<'de, Context, T: bincode::BorrowDecode<'de, Context>> bincode::BorrowDecode<'de, Context> for Container<T> {
+    ///     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+    ///         decoder: &mut D,
+    ///     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+    ///         let len = u64::borrow_decode(decoder)?;
+    ///         let len: usize = len.try_into().map_err(|_| DecodeError::OutsideUsizeRange(len))?;
+    ///         // Make sure we don't allocate too much memory
+    ///         decoder.claim_bytes_read(len * core::mem::size_of::<T>());
+    ///
+    ///         let mut result = Container::with_capacity(len);
+    ///         for _ in 0..len {
+    ///             // un-claim the memory
+    ///             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
+    ///             result.push(T::borrow_decode(decoder)?)
+    ///         }
+    ///         Ok(result)
+    ///     }
+    /// }
+    /// ```
+    fn unclaim_bytes_read(&mut self, n: usize);
+}
+
+/// Any source that can decode basic types. This type is most notably implemented for [Decoder].
+///
+/// This is an extension of [Decode] that can also return borrowed data.
+pub trait BorrowDecoder<'de>: Decoder {
+    /// The concrete [BorrowReader] type
+    type BR: BorrowReader<'de>;
+
+    /// Rerturns a mutable reference to the borrow reader
+    fn borrow_reader(&mut self) -> &mut Self::BR;
+}
+
+impl<T> Decoder for &mut T
 where
-    R: BincodeRead<'de>,
-    O: Options,
+    T: Decoder,
 {
-    type Error = Error;
+    type R = T::R;
 
-    #[inline]
-    fn deserialize_any<V>(self, _visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        Err(Box::new(ErrorKind::DeserializeAnyNotSupported))
+    type C = T::C;
+
+    type Context = T::Context;
+
+    fn reader(&mut self) -> &mut Self::R {
+        T::reader(self)
     }
 
-    fn deserialize_bool<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        match self.deserialize_byte()? {
-            1 => visitor.visit_bool(true),
-            0 => visitor.visit_bool(false),
-            value => Err(ErrorKind::InvalidBoolEncoding(value).into()),
-        }
-    }
-
-    impl_deserialize_int!(deserialize_u16 = visit_u16(deserialize_u16));
-    impl_deserialize_int!(deserialize_u32 = visit_u32(deserialize_u32));
-    impl_deserialize_int!(deserialize_u64 = visit_u64(deserialize_u64));
-    impl_deserialize_int!(deserialize_i16 = visit_i16(deserialize_i16));
-    impl_deserialize_int!(deserialize_i32 = visit_i32(deserialize_i32));
-    impl_deserialize_int!(deserialize_i64 = visit_i64(deserialize_i64));
-
-    fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        self.read_literal_type::<f32>()?;
-        let value = self
-            .reader
-            .read_f32::<<O::Endian as BincodeByteOrder>::Endian>()?;
-        visitor.visit_f32(value)
-    }
-
-    fn deserialize_f64<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        self.read_literal_type::<f64>()?;
-        let value = self
-            .reader
-            .read_f64::<<O::Endian as BincodeByteOrder>::Endian>()?;
-        visitor.visit_f64(value)
-    }
-
-    serde_if_integer128! {
-        impl_deserialize_int!(deserialize_u128 = visit_u128(deserialize_u128));
-        impl_deserialize_int!(deserialize_i128 = visit_i128(deserialize_i128));
+    fn config(&self) -> &Self::C {
+        T::config(self)
     }
 
     #[inline]
-    fn deserialize_u8<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_u8(self.deserialize_byte()? as u8)
+    fn claim_bytes_read(&mut self, n: usize) -> Result<(), DecodeError> {
+        T::claim_bytes_read(self, n)
     }
 
     #[inline]
-    fn deserialize_i8<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_i8(self.deserialize_byte()? as i8)
+    fn unclaim_bytes_read(&mut self, n: usize) {
+        T::unclaim_bytes_read(self, n)
     }
 
-    fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_unit()
-    }
-
-    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        use std::str;
-
-        let error = || ErrorKind::InvalidCharEncoding.into();
-
-        let mut buf = [0u8; 4];
-
-        // Look at the first byte to see how many bytes must be read
-        self.reader.read_exact(&mut buf[..1])?;
-        let width = utf8_char_width(buf[0]);
-        if width == 1 {
-            return visitor.visit_char(buf[0] as char);
-        }
-        if width == 0 {
-            return Err(error());
-        }
-
-        if self.reader.read_exact(&mut buf[1..width]).is_err() {
-            return Err(error());
-        }
-
-        let res = str::from_utf8(&buf[..width])
-            .ok()
-            .and_then(|s| s.chars().next())
-            .ok_or_else(error)?;
-        visitor.visit_char(res)
-    }
-
-    fn deserialize_str<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let len = O::IntEncoding::deserialize_len(self)?;
-        self.read_bytes(len as u64)?;
-        self.reader.forward_read_str(len, visitor)
-    }
-
-    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_string(self.read_string()?)
-    }
-
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let len = O::IntEncoding::deserialize_len(self)?;
-        self.read_bytes(len as u64)?;
-        self.reader.forward_read_bytes(len, visitor)
-    }
-
-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_byte_buf(self.read_vec()?)
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        _enum: &'static str,
-        _variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        impl<'de, 'a, R: 'a, O> serde::de::EnumAccess<'de> for &'a mut Deserializer<R, O>
-        where
-            R: BincodeRead<'de>,
-            O: Options,
-        {
-            type Error = Error;
-            type Variant = Self;
-
-            fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
-            where
-                V: serde::de::DeserializeSeed<'de>,
-            {
-                let idx: u32 = O::IntEncoding::deserialize_u32(self)?;
-                let val: Result<_> = seed.deserialize(idx.into_deserializer());
-                Ok((val?, self))
-            }
-        }
-
-        visitor.visit_enum(self)
-    }
-
-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        struct Access<'a, R: Read + 'a, O: Options + 'a> {
-            deserializer: &'a mut Deserializer<R, O>,
-            len: usize,
-        }
-
-        impl<'de, 'a, 'b: 'a, R: BincodeRead<'de> + 'b, O: Options> serde::de::SeqAccess<'de>
-            for Access<'a, R, O>
-        {
-            type Error = Error;
-
-            fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>>
-            where
-                T: serde::de::DeserializeSeed<'de>,
-            {
-                if self.len > 0 {
-                    self.len -= 1;
-                    let value =
-                        serde::de::DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
-                    Ok(Some(value))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
-            }
-        }
-
-        visitor.visit_seq(Access {
-            deserializer: self,
-            len,
-        })
-    }
-
-    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let value: u8 = serde::de::Deserialize::deserialize(&mut *self)?;
-        match value {
-            0 => visitor.visit_none(),
-            1 => visitor.visit_some(&mut *self),
-            v => Err(ErrorKind::InvalidTagEncoding(v as usize).into()),
-        }
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let len = O::IntEncoding::deserialize_len(self)?;
-
-        self.deserialize_tuple(len, visitor)
-    }
-
-    fn deserialize_map<V>(self, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        struct Access<'a, R: Read + 'a, O: Options + 'a> {
-            deserializer: &'a mut Deserializer<R, O>,
-            len: usize,
-        }
-
-        impl<'de, 'a, 'b: 'a, R: BincodeRead<'de> + 'b, O: Options> serde::de::MapAccess<'de>
-            for Access<'a, R, O>
-        {
-            type Error = Error;
-
-            fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>>
-            where
-                K: serde::de::DeserializeSeed<'de>,
-            {
-                if self.len > 0 {
-                    self.len -= 1;
-                    let key =
-                        serde::de::DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
-                    Ok(Some(key))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value>
-            where
-                V: serde::de::DeserializeSeed<'de>,
-            {
-                let value = serde::de::DeserializeSeed::deserialize(seed, &mut *self.deserializer)?;
-                Ok(value)
-            }
-
-            fn size_hint(&self) -> Option<usize> {
-                Some(self.len)
-            }
-        }
-
-        let len = O::IntEncoding::deserialize_len(self)?;
-
-        visitor.visit_map(Access {
-            deserializer: self,
-            len,
-        })
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        _name: &str,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        self.deserialize_tuple(fields.len(), visitor)
-    }
-
-    fn deserialize_identifier<V>(self, _visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let message = "Bincode does not support Deserializer::deserialize_identifier";
-        Err(Error::custom(message))
-    }
-
-    fn deserialize_newtype_struct<V>(self, _name: &str, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_unit_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        visitor.visit_unit()
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        _name: &'static str,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        self.deserialize_tuple(len, visitor)
-    }
-
-    fn deserialize_ignored_any<V>(self, _visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        let message = "Bincode does not support Deserializer::deserialize_ignored_any";
-        Err(Error::custom(message))
-    }
-
-    fn is_human_readable(&self) -> bool {
-        false
+    fn context(&mut self) -> &mut Self::Context {
+        T::context(self)
     }
 }
 
-impl<'de, 'a, R, O> serde::de::VariantAccess<'de> for &'a mut Deserializer<R, O>
+impl<'de, T> BorrowDecoder<'de> for &mut T
 where
-    R: BincodeRead<'de>,
-    O: Options,
+    T: BorrowDecoder<'de>,
 {
-    type Error = Error;
+    type BR = T::BR;
 
-    fn unit_variant(self) -> Result<()> {
-        Ok(())
-    }
-
-    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
-    where
-        T: serde::de::DeserializeSeed<'de>,
-    {
-        serde::de::DeserializeSeed::deserialize(seed, self)
-    }
-
-    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        serde::de::Deserializer::deserialize_tuple(self, len, visitor)
-    }
-
-    fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        serde::de::Deserializer::deserialize_tuple(self, fields.len(), visitor)
+    fn borrow_reader(&mut self) -> &mut Self::BR {
+        T::borrow_reader(self)
     }
 }
-static UTF8_CHAR_WIDTH: [u8; 256] = [
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, // 0x1F
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, // 0x3F
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, // 0x5F
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, // 0x7F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // 0x9F
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, // 0xBF
-    0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, // 0xDF
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, // 0xEF
-    4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0xFF
-];
 
-// This function is a copy of core::str::utf8_char_width
-fn utf8_char_width(b: u8) -> usize {
-    UTF8_CHAR_WIDTH[b as usize] as usize
+/// Decodes only the option variant from the decoder. Will not read any more data than that.
+#[inline]
+pub(crate) fn decode_option_variant<D: Decoder>(
+    decoder: &mut D,
+    type_name: &'static str,
+) -> Result<Option<()>, DecodeError> {
+    let is_some = u8::decode(decoder)?;
+    match is_some {
+        0 => Ok(None),
+        1 => Ok(Some(())),
+        x => Err(DecodeError::UnexpectedVariant {
+            found: x as u32,
+            allowed: &crate::error::AllowedEnumVariants::Range { max: 1, min: 0 },
+            type_name,
+        }),
+    }
+}
+
+/// Decodes the length of any slice, container, etc from the decoder
+#[inline]
+pub(crate) fn decode_slice_len<D: Decoder>(decoder: &mut D) -> Result<usize, DecodeError> {
+    let v = u64::decode(decoder)?;
+
+    v.try_into().map_err(|_| DecodeError::OutsideUsizeRange(v))
 }

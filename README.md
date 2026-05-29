@@ -25,16 +25,6 @@ This Project uses Daemon - Client Architecture meaning a daemon(`beacond`) will 
 
 ## Installation
 
-<!-- ### Void Linux -->
-<!---->
-<!-- ```sh -->
-<!-- # Installing the binaries -->
-<!-- sudo xbps-install beacon -->
-<!---->
-<!-- # linking with Runit to run on startup -->
-<!-- sudo ln -s /etc/sv/beacon/ /var/service/ -->
-<!-- ``` -->
-
 ### Install from source
 
 ```sh

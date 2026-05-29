@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use bincode::config;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixListener,
@@ -58,17 +59,14 @@ pub fn spawn_ethernet_connection() -> Result<(), Box<dyn Error>> {
 // Spawning thread to check for residue leases and manage them
 pub fn spawn_residue_connection() -> Result<(), Box<dyn Error>> {
     tokio::spawn(async move {
-        println!("Checking for previous lease");
         let files = DhcpStorage::read_file().unwrap();
         let interfaces = list_interfaces().unwrap();
         if files.is_empty() {
-            println!("No DhcpLease found.");
             return;
         };
-        println!("Found Residue Dhcp");
         let file = files.first().unwrap();
         if file.time_initiated + file.lease_duration as i64 <= Utc::now().timestamp() {
-            println!("Found Invalid Dhcp");
+            println!("Found Residue Dhcp");
             let _ = DhcpStorage::empty_out();
             return;
         };
@@ -76,7 +74,6 @@ pub fn spawn_residue_connection() -> Result<(), Box<dyn Error>> {
             .iter()
             .find(|f| f.ifname.as_ref().unwrap() == &file.ifname)
             .unwrap();
-        println!("Spawned Thread management for current DhcpLease");
         let _ = manage_lease_thread(iface);
     });
     Ok(())
@@ -92,10 +89,6 @@ pub async fn spawn_autoconnection(
         }
         let reject_list = reject_list.clone();
         tokio::spawn(async move {
-            println!(
-                "Spawned Autoconnection for {}",
-                iface.ifname.as_ref().unwrap()
-            );
             let family_info = get_family_info().unwrap();
             let mut connected = false;
             loop {
@@ -105,7 +98,7 @@ pub async fn spawn_autoconnection(
                     let list = reject_list.lock().unwrap();
 
                     if let Err(e) = autoconnect(&hosts, &iface, &list, &mut connected) {
-                        println!("Autoconnection Error: {:#?}", e.to_string());
+                        eprintln!("Autoconnection Error: {:#?}", e.to_string());
                     };
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -136,14 +129,14 @@ pub async fn spawn_main_loop(
                         break;
                     }
                     Ok(n) => {
-                        let cmd: Command = match bincode::deserialize(&buf[..n]) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                eprintln!("Unable to parse Command. Skipping.\n{}", e);
-                                continue;
-                            }
-                        };
-                        println!("Command: {:#?}", cmd);
+                        let cmd: Command =
+                            match bincode::decode_from_slice(&buf[..n], config::standard()) {
+                                Ok((c, _)) => c,
+                                Err(e) => {
+                                    eprintln!("Unable to parse Command. Skipping.\n{}", e);
+                                    continue;
+                                }
+                            };
                         let reject_list = Arc::clone(&reject_list);
                         let response = match execute(&cmd, reject_list) {
                             Ok(s) => s,
@@ -152,7 +145,8 @@ pub async fn spawn_main_loop(
                         if let Response::Error(e) = response.clone() {
                             eprintln!("Response Err: {}", e);
                         }
-                        let serialized = bincode::serialize(&response).unwrap();
+                        let serialized = bincode::encode_to_vec(&response, config::standard())
+                            .expect("Cannot Encode Response.");
                         socket
                             .write_all(&serialized)
                             .await
@@ -169,7 +163,7 @@ pub async fn spawn_main_loop(
 }
 
 pub async fn beacond() -> Result<(), Box<dyn Error>> {
-    println!("Server Started. :D\nDaemon listening on {}", SOCKET_PATH);
+    println!("Server Started.\nDaemon listening on {}", SOCKET_PATH);
     let reject_list = Arc::new(Mutex::new(Vec::<String>::new()));
     let reject_list_clone = Arc::clone(&reject_list);
 

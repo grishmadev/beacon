@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use bincode::{Decode, Encode};
 
 use crate::types::{Connection, CurrentConnection, Host, Interface};
 pub mod backend;
@@ -31,7 +31,7 @@ pub const DHCPINFO_PATH: &str = "/var/beacon_dhcp_info";
 pub const DAEMON_ERR_PATH: &str = "/tmp/beacon.err";
 pub const DAEMON_OUT_PATH: &str = "/tmp/beacon.out";
 
-#[derive(Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Debug, PartialEq, Decode, Encode)]
 pub enum Command {
     Ping,
     Tick,
@@ -50,7 +50,7 @@ pub enum Command {
     Info(String), // bssid,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Debug, Clone, Decode, Encode)]
 pub enum Response {
     Ok,
     Pong,

@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on package cache
+error: no matching package named `proptest` found
+location searched: directory source `/home/grishma/Ideas/beacon/vendor` (which is replacing registry `crates-io`)
+required by package `etherparse v0.20.1 (/home/grishma/Ideas/beacon/vendor/etherparse)`

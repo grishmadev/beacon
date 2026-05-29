@@ -34,6 +34,10 @@ use socket2::SockAddr;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::net::Ipv4Addr;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 use std::{error::Error, io::Cursor, path::Path};
 
@@ -232,7 +236,8 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
                                 Nl80211Bss::BssSignalMbm => {
                                     let bytes = nested.nla_payload().as_ref();
                                     if bytes.len() >= 4 {
-                                        let signal = i32::from_le_bytes(bytes[..4].try_into()?) / 100;
+                                        let signal =
+                                            i32::from_le_bytes(bytes[..4].try_into()?) / 100;
                                         target.set_signal(signal);
                                     }
                                 }
@@ -537,7 +542,6 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
     let mut recv_buffer = [0u8; 1024 * 64];
     loop {
         let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
-        // recieving scans can take 1 - 3 secs
 
         let mut cursor = Cursor::new(&recv_buffer[..size]);
         let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
@@ -545,7 +549,6 @@ pub fn trigger_scan(family_info: &FamilyInfo, ifindex: u32) -> Result<(), Box<dy
         if let NlPayload::Err(e) = res.nl_payload() {
             if e.error() == &-16 {
                 // Resource Busy
-                print!("Retrying, {}", e);
                 continue;
             }
             return Err(format!("Error from trigger_scan: {}", e).into());
@@ -857,7 +860,6 @@ pub fn remove_lease_and_gateway_ip(
     let mut cmd_buf = Cursor::new(Vec::new());
     nlmsg.to_bytes(&mut cmd_buf)?;
     socket.send(cmd_buf.get_ref(), Msg::empty())?;
-    println!("Removing...");
 
     let wait_for_ack = |socket: &NlSocket| -> Result<(), Box<dyn Error>> {
         loop {
@@ -867,11 +869,11 @@ pub fn remove_lease_and_gateway_ip(
 
             let msg: Nlmsghdr<u16, Nlmsgerr<u16>> = Nlmsghdr::from_bytes(&mut slice)?;
             if let NlPayload::Payload(err) = msg.nl_payload() {
-                if *err.error() == 0 {
+                if err.error() == &0 {
                     return Ok(());
                 } else {
                     println!(
-                        "Successfully removed IP {} for Interface {}",
+                        "Successfully removed IP {} for Interface [{}]",
                         ip_addr, ifindex
                     );
                     return Err(io::Error::from_raw_os_error(-err.error()).into());
@@ -923,14 +925,14 @@ pub fn remove_lease_and_gateway_ip(
     Ok(())
 }
 
-// This is for managing the lease connection in a separate thread
-// i.e: rebinding leaase
+/// This is for managing the lease connection in a separate thread
+///
+/// i.e: rebinding leaase
 pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let iface = iface.clone();
     let ifname = iface.ifname.clone().ok_or("No ifname for lease thread.")?;
     tokio::spawn(async move {
-        let mut unicast_renewed = false;
-        let mut broadcast_renewed = false;
+        let renewed = Arc::new(AtomicBool::new(false));
         loop {
             match DhcpStorage::read_file() {
                 Ok(files) => {
@@ -944,65 +946,54 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
 
                         // duration of the lease lifetime
                         let ls_dur = content.lease_duration as i64;
-                        println!("new dhcp connection");
-                        loop {
-                            manage_lease(
-                                &iface,
-                                time_init,
-                                ls_dur,
-                                &mut unicast_renewed,
-                                &mut broadcast_renewed,
-                            );
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                    } else {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+
+                        let renewed_c = Arc::clone(&renewed);
+                        manage_lease(&iface, time_init, ls_dur, renewed_c);
+                        tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                 }
                 Err(e) => {
                     println!("Error in reading dhcp files: {}", e);
                 }
             }
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
 
-    println!("Setup DHCP Lease Management Thread");
     Ok(())
 }
 
-fn manage_lease(
-    iface: &Interface,
-    time_init: i64,
-    ls_dur: i64,
-    uni_ren: &mut bool,
-    brd_ren: &mut bool,
-) {
-    let ifname = match iface.ifname.as_ref() {
-        Some(name) => name.to_string(),
-        None => return,
-    };
+fn manage_lease(iface: &Interface, time_init: i64, ls_dur: i64, renewed: Arc<AtomicBool>) {
     let now = Utc::now();
     let t1 = ls_dur / 2;
     let t2 = ls_dur as f64 * 0.875;
-    let time_left = now.timestamp() - time_init;
+    let time_passed = now.timestamp() - time_init;
+    let confirm_renewed = || {
+        let ren = Arc::clone(&renewed);
+        // renewed.store(true, Ordering::SeqCst);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let time_passed = Utc::now().timestamp() - time_init;
+            if time_passed > t1 {
+                ren.store(false, Ordering::SeqCst);
+            }
+        });
+    };
 
-    let data = {
-        if time_left > t1 && time_left < t2 as i64 && !*uni_ren {
-            *uni_ren = true;
-            *brd_ren = false;
-            renew_connection(iface, false)
-        } else if time_left > t2 as i64 && !*brd_ren {
-            *uni_ren = false;
-            *brd_ren = true;
-            renew_connection(iface, true)
-        } else {
-            Err("Nothing happened.".into())
+    let renewed_bool = renewed.load(Ordering::SeqCst);
+    if renewed_bool {
+        return;
+    }
+
+    renewed.store(true, Ordering::SeqCst);
+    confirm_renewed();
+    if time_passed > t1 {
+        renewed.store(true, Ordering::SeqCst);
+        let broadcast = time_passed > t2 as i64;
+        if let Err(e) = renew_connection(iface, broadcast) {
+            eprintln!("Cannot Renew Connection: {}", e);
         }
-    };
-
-    if let Ok(Some(data)) = data {
-        let _ = DhcpStorage::write_from_dhcplease(&data, ifname);
-    };
+    }
 }
 
 pub fn autoconnect(
@@ -1031,7 +1022,9 @@ pub fn autoconnect(
             if reject_list.iter().any(|f| f == ssid) {
                 continue;
             }
-            let Some(ref bssid) = ahost.bssid else { continue };
+            let Some(ref bssid) = ahost.bssid else {
+                continue;
+            };
             for shost in saved_connections.iter() {
                 if &shost.bssid == bssid {
                     connection = Some(ahost.clone());
@@ -1053,7 +1046,6 @@ pub fn autoconnect(
         };
         Ok(())
     } else {
-        println!("No Saved Connection found.");
         Err("No Saved Network found.".into())
     }
 }

@@ -22,8 +22,7 @@ pub fn list_active_signals(
         return Ok(Vec::new());
     }
     let ifindex = interface.ifindex.ok_or("No ifindex for interface.")?;
-    trigger_scan(family_info, ifindex)
-        .map_err(|e| format!("Trigger scan failed: {}", e))?;
+    trigger_scan(family_info, ifindex).map_err(|e| format!("Trigger scan failed: {}", e))?;
     let hosts = get_scan(family_id, ifindex)?;
     result.extend(hosts);
     Ok(result)
@@ -39,12 +38,13 @@ pub fn connect_to(
     host: Host,
     password: &Option<String>,
     reject_list: Option<Arc<Mutex<Vec<String>>>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error>> {
     let saved_networks = list_all_signals().unwrap_or_default();
 
-    let found_password_option = host.bssid.as_ref().and_then(|bssid| {
-        saved_networks.iter().find(|e| &e.bssid == bssid)
-    });
+    let found_password_option = host
+        .bssid
+        .as_ref()
+        .and_then(|bssid| saved_networks.iter().find(|e| &e.bssid == bssid));
     let final_password: String;
     match password {
         Some(val) => {
@@ -87,8 +87,7 @@ pub fn disconnect_connection(
     ifname: &str,
     reject_list: Option<Arc<Mutex<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let family_info = get_family_info()
-        .map_err(|e| format!("Failed to get family info: {}", e))?;
+    let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
     if disconnect(ifname, true).is_ok() {
         if let Some(current) = get_current(family_info.id)? {
             if let Some(ssid) = current.ssid

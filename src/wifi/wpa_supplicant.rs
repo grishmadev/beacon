@@ -7,7 +7,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
 use std::slice;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use dhcp4r::options::{DhcpOption, MessageType};
@@ -88,7 +87,10 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
         }
 
         // set psk
-        let psk_ok = send_wpa_cmd(&skt, &format!("SET_NETWORK {} psk \"{}\"", network_id, password))?;
+        let psk_ok = send_wpa_cmd(
+            &skt,
+            &format!("SET_NETWORK {} psk \"{}\"", network_id, password),
+        )?;
         if psk_ok != "OK" {
             return Err(format!("failed to set password. {}", psk_ok).into());
         }
@@ -96,7 +98,6 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
         send_wpa_cmd(&skt, "SAVE_CONFIG")?;
         network_id
     };
-    println!("found network: {}", network_id);
 
     // disable other networks incase wpa_supplicant connects to any cached network
     let disable_ok = send_wpa_cmd(&skt, "DISABLE_NETWORK all")?;
@@ -120,9 +121,7 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
                 let event = String::from_utf8_lossy(&recv_buffer[..size])
                     .trim()
                     .to_string();
-                println!("event: {}", event);
                 if event.contains("CTRL-EVENT-CONNECTED") {
-                    println!("Connected.");
                     break;
                 } else if event.contains("CTRL-EVENT-AUTH-REJECT") {
                     send_wpa_cmd(&skt, &format!("REMOVE_NETWORK {}", network_id))?;
@@ -139,7 +138,9 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     }
     skt.shutdown(std::net::Shutdown::Both)?;
     let _ = fs::remove_file(client_path);
+
     // Discover packet sent here
+    std::thread::sleep(Duration::from_secs(3));
     let host_data = discover_host(iface)?;
 
     // Request packet sent here
@@ -166,7 +167,6 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     // create a thread to disconnect completely upon server withdrawal
     let ifindex = *ifindex;
     let ifname = ifname.clone();
-    println!("Spawning thread to look for disconnection");
     tokio::spawn(async move {
         // wait for disconnection
 
@@ -188,8 +188,7 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
      * This is for managing the lease connection in a separate thread
      * i.e: rebinding leaase
      */
-    let _ = manage_lease_thread(iface);
-    println!("spawned manager");
+    manage_lease_thread(iface)?;
     Ok(())
 }
 
@@ -252,30 +251,10 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
     }
 
     send_wpa_cmd(&wpa_skt, "DISCONNECT")?;
-    // loop {
-    //     if start.elapsed() >= timeout {
-    //         continue 'outer;
-    //     }
-    //     // wait for 5 secs to disconnet
-    //     wpa_skt.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-    //     if let Ok(size) = wpa_skt.recv(&mut recv_buf) {
-    //         let event = String::from_utf8_lossy(&recv_buf[..size]).to_string();
-    //         println!("wpa_supplicant: {}", event);
-    //         if event.contains("OK") || event.contains("CTRL-EVENT-DISCONNECTED") {
-    //             let _ = DhcpStorage::empty_out();
-    //             break;
-    //         };
-    //     }
-    // }
-    // if remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len).is_ok() {
-    //     break;
-    // };
-    // }
-    println!("Removing lease and gateway IP");
-    thread::spawn(move || {
-        let _ = remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len);
-    });
-    println!("Removed Lease IP");
+
+    // thread::spawn(move || {
+    // });
+    remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len)?;
     let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
 
@@ -365,7 +344,6 @@ fn apply_network_config(
 ) -> Result<(), Box<dyn Error>> {
     add_addr(socket, ifindex, ip)?;
     set_default_route(socket, ifindex, gateway)?;
-    println!("Network Configurations Applied.");
     Ok(())
 }
 
@@ -377,12 +355,7 @@ fn set_dns(dns_servers: Vec<Ipv4Addr>) -> Result<(), Box<dyn Error>> {
     // fallback DNS's
     config_lines.push("nameserver 8.8.8.8".to_string());
     config_lines.push("nameserver 1.1.1.1".to_string());
-    match write("/etc/resolv.conf", config_lines.join("\n")) {
-        Ok(_) => println!("DNS set!"),
-        Err(e) => {
-            return Err(e.into());
-        }
-    };
+    write("/etc/resolv.conf", config_lines.join("\n"))?;
     Ok(())
 }
 
@@ -447,10 +420,6 @@ pub fn request_host_wireless(
     let data = request_packet.encode(&mut buf);
 
     send_socket.send_to(data, dest)?;
-
-    if let Some(ip) = server_id {
-        println!("DHCPREQUESST msg sent for IP: {:?}", ip);
-    }
 
     let timeout = Instant::now();
     let mut buf = [MaybeUninit::<u8>::zeroed(); 1500];
@@ -622,7 +591,6 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                     };
 
                     if packet.xid != msg.xid {
-                        println!("Packet didnt match {}, {}", packet.xid, msg.xid);
                         continue;
                     }
 
@@ -630,7 +598,6 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
                         match option {
                             DhcpOption::DhcpMessageType(val) => match val {
                                 dhcp4r::options::MessageType::Offer => {
-                                    println!("Offered IP: {:?}", packet.yiaddr);
                                     ip_addr = Some(packet.yiaddr);
                                 }
                                 _ => continue,
@@ -695,8 +662,6 @@ pub fn request_host_wired(
         67,
     );
     let send_socket = UdpSocket::bind(addr)?;
-    // let std_addr = SocketAddrV4::new(server_ip, 67);
-    println!("Sub 1");
 
     let sockaddr = create_packet_sockaddr(ifindex);
     socket.bind(&sockaddr)?;
@@ -704,7 +669,6 @@ pub fn request_host_wired(
 
     bind_socket_to_device(&send_socket, &ifname)?;
     socket.bind_device(Some(ifname.as_bytes()))?;
-    println!("Sub 2");
 
     let timeout = Instant::now();
 
@@ -727,9 +691,7 @@ pub fn request_host_wired(
 
     let mut buf = [0u8; 1500];
     let encoded = msg.encode(&mut buf);
-    println!("dest addr: {:?}", std_addr);
     send_socket.send_to(encoded, std_addr)?;
-    println!("Sub 3");
     let mut lease = DhcpLease::default();
     let mut res_buf = [MaybeUninit::<u8>::zeroed(); 1500];
 

@@ -1,17 +1,17 @@
+use bincode::{Decode, Encode};
 use tokio::sync::mpsc::UnboundedSender;
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     widgets::{ListState, TableState},
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
     Command,
     types::{CurrentConnection, Host, Interface},
 };
 
-#[derive(Default, Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub enum Tab {
     #[default]
     Interface,
@@ -19,7 +19,7 @@ pub enum Tab {
     Input,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Decode, Encode)]
 pub struct InterfaceList {
     pub iface: Interface,
     pub hosts: Vec<Host>,

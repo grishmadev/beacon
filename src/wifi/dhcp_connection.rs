@@ -6,12 +6,12 @@ use std::{
     path::Path,
 };
 
+use bincode::{Decode, Encode, config};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 
 use crate::{DHCPINFO_PATH, types::DhcpLease};
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, Decode, Encode)]
 pub struct DhcpFile {
     pub ifname: String,
     pub ip_addr: Option<Ipv4Addr>,
@@ -31,26 +31,51 @@ impl DhcpStorage {
             return Ok(Vec::new());
         }
         let content = fs::read(path)?;
-        let dhcp_lease: Vec<DhcpFile> = bincode::deserialize(&content)?;
+        let (dhcp_lease, _) = bincode::decode_from_slice(&content, config::standard())?;
 
         Ok(dhcp_lease)
     }
 
+    /// Use this function when clearing out any duplicate DhcpFiles
+    fn get_unique() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
+        let mut result: Vec<DhcpFile> = vec![];
+        let files = DhcpStorage::read_file().unwrap_or_default();
+        for file in files {
+            if result.iter().any(|f| f.ifname == file.ifname) {
+                continue;
+            };
+            result.push(file);
+        }
+        Ok(result)
+    }
+    pub fn read_specific(ifname: &str) -> Result<Option<DhcpFile>, Box<dyn Error>> {
+        let content =
+            DhcpStorage::read_file().map_err(|e| Box::<dyn Error>::from(format!("{e}")))?;
+        let res = content
+            .iter()
+            .find(|f| f.ifname == ifname)
+            .map(|f| f.to_owned());
+
+        Ok(res)
+    }
+
     pub fn write_file(content: &mut DhcpFile) -> Result<(), Box<dyn Error>> {
-        let path = Path::new(DHCPINFO_PATH);
-        content.time_initiated = Utc::now().timestamp();
-        let mut lease = DhcpStorage::read_file().map_err(|e| Box::<dyn Error>::from(format!("{e}")))?;
+        let time = Utc::now().timestamp();
+        content.time_initiated = time;
+        let mut lease =
+            DhcpStorage::read_file().map_err(|e| Box::<dyn Error>::from(format!("{e}")))?;
         if let Some(target_idx) = lease.iter().position(|f| f.ifname == content.ifname) {
             lease[target_idx] = content.clone();
         } else {
             lease.push(content.clone());
         };
-        let serialized = bincode::serialize(&lease)?;
+        println!("Writing to file: {lease:#?}");
+        let serialized = bincode::encode_to_vec(&lease, config::standard())?;
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
-            .open(path)?;
+            .open(DHCPINFO_PATH)?;
         file.write_all(&serialized)?;
         file.sync_all()?;
         Ok(())
@@ -63,8 +88,8 @@ impl DhcpStorage {
             dns_servers: data.dns_servers.to_owned(),
             lease_duration: data.lease_duration,
             server_id: data.server_id,
-            time_initiated: Utc::now().timestamp(),
             ifname,
+            ..Default::default()
         };
         DhcpStorage::write_file(&mut content)?;
         Ok(())
