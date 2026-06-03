@@ -13,17 +13,18 @@ use tokio::{
     net::UnixListener,
 };
 
-use chrono::Utc;
+use chrono::{Utc, format};
 
 use crate::{
-    Command, Response, SOCKET_PATH,
+    Command, Log, Response, SOCKET_PATH,
     backend::functions::{list_active_signals, list_interfaces},
+    debug::log_msg,
     executer::execute,
     types::InterfaceType,
     wifi::{
         dhcp_connection::DhcpStorage,
         helper::{autoconnect, get_family_info, manage_lease_thread},
-        wpa_supplicant::connect_via_ethernet,
+        wpa_supplicant::{connect_via_ethernet, disconnect},
     },
 };
 
@@ -56,25 +57,37 @@ pub fn spawn_ethernet_connection() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// Spawning thread to check for residue leases and manage them
+/// Spawning thread to check for residue leases and manage them
 pub fn spawn_residue_connection() -> Result<(), Box<dyn Error>> {
+    /*
+     *Check for residue connection
+     * 1. Check file for valid connection
+     * 2. start complete reconnection
+     */
+
     tokio::spawn(async move {
         let files = DhcpStorage::read_file().unwrap();
         let interfaces = list_interfaces().unwrap();
         if files.is_empty() {
             return;
         };
-        let file = files.first().unwrap();
-        if file.time_initiated + file.lease_duration as i64 <= Utc::now().timestamp() {
-            println!("Found Residue Dhcp");
-            let _ = DhcpStorage::empty_out();
-            return;
-        };
-        let iface = interfaces
-            .iter()
-            .find(|f| f.ifname.as_ref().unwrap() == &file.ifname)
-            .unwrap();
-        let _ = manage_lease_thread(iface);
+        for file in files {
+            // Timeout over
+            if file.time_initiated + file.lease_duration as i64 <= Utc::now().timestamp() {
+                let ifname = file.ifname;
+                _ = DhcpStorage::remove_specific(&ifname);
+                if let Err(e) = disconnect(&ifname, false) {
+                    log_msg(&e.to_string(), Log::Err);
+                }
+                return;
+            }
+            log_msg("Found Residue Connection", Log::Ok);
+            let iface = interfaces
+                .iter()
+                .find(|f| f.ifname.as_ref().unwrap() == &file.ifname)
+                .unwrap();
+            _ = manage_lease_thread(iface);
+        }
     });
     Ok(())
 }
@@ -98,7 +111,10 @@ pub async fn spawn_autoconnection(
                     let list = reject_list.lock().unwrap();
 
                     if let Err(e) = autoconnect(&hosts, &iface, &list, &mut connected) {
-                        eprintln!("Autoconnection Error: {:#?}", e.to_string());
+                        log_msg(
+                            &format!("Autoconnection Error: {:#?}", e.to_string()),
+                            Log::Err,
+                        );
                     };
                 }
                 tokio::time::sleep(Duration::from_secs(5)).await;
@@ -143,7 +159,7 @@ pub async fn spawn_main_loop(
                             Err(e) => Response::Error(e.to_string()),
                         };
                         if let Response::Error(e) = response.clone() {
-                            eprintln!("Response Err: {}", e);
+                            log_msg(&format!("Response Err: {}", e), Log::Err);
                         }
                         let serialized = bincode::encode_to_vec(&response, config::standard())
                             .expect("Cannot Encode Response.");
@@ -153,7 +169,7 @@ pub async fn spawn_main_loop(
                             .expect("Couldn't Write to File");
                     }
                     Err(e) => {
-                        eprint!("Socket Error: {}", e);
+                        log_msg(&format!("Socket Error: {}", e), Log::Err);
                         break;
                     }
                 };
@@ -163,17 +179,20 @@ pub async fn spawn_main_loop(
 }
 
 pub async fn beacond() -> Result<(), Box<dyn Error>> {
-    println!("Server Started.\nDaemon listening on {}", SOCKET_PATH);
+    log_msg(
+        &format!("Server Started.\nDaemon listening on {}", SOCKET_PATH),
+        Log::Ok,
+    );
     let reject_list = Arc::new(Mutex::new(Vec::<String>::new()));
     let reject_list_clone = Arc::clone(&reject_list);
 
     spawn_ethernet_connection()?;
     spawn_residue_connection()?;
     if let Err(e) = spawn_autoconnection(reject_list_clone).await {
-        println!("Error in Autoconnect: {}", e);
+        log_msg(&e.to_string(), Log::Err);
     };
     if let Err(e) = spawn_main_loop(Arc::clone(&reject_list)).await {
-        println!("Error in Main Loop: {}", e);
+        log_msg(&e.to_string(), Log::Err);
     }
     Ok(())
 }

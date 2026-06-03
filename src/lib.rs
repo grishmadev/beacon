@@ -65,3 +65,10 @@ pub enum Response {
     ClearNotification,
     Error(String),
 }
+
+pub enum Log {
+    Ok,
+    Err,
+    Info,
+    Warn,
+}

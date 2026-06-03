@@ -9,7 +9,7 @@ use std::{
 use bincode::{Decode, Encode, config};
 use chrono::Utc;
 
-use crate::{DHCPINFO_PATH, types::DhcpLease};
+use crate::{DHCPINFO_PATH, Log, debug::log_msg, types::DhcpLease};
 
 #[derive(Debug, Default, PartialEq, Clone, Decode, Encode)]
 pub struct DhcpFile {
@@ -27,7 +27,7 @@ pub struct DhcpStorage;
 impl DhcpStorage {
     pub fn read_file() -> Result<Vec<DhcpFile>, Box<dyn Error + Send + Sync>> {
         let path = Path::new(DHCPINFO_PATH);
-        if !path.exists() || fs::metadata(path)?.len() == 0 {
+        if !path.exists() || path.metadata()?.len() == 0 {
             return Ok(Vec::new());
         }
         let content = fs::read(path)?;
@@ -36,8 +36,28 @@ impl DhcpStorage {
         Ok(dhcp_lease)
     }
 
+    /// Remove a specific Connection
+    pub fn remove_specific(ifname: &str) -> Result<(), Box<dyn Error>> {
+        let mut files = match DhcpStorage::read_file() {
+            Ok(s) => s,
+            Err(e) => {
+                log_msg(&e.to_string(), Log::Err);
+                return Err(e.to_string().into());
+            }
+        };
+        files = files
+            .iter()
+            .filter(|f| f.ifname != ifname)
+            .cloned()
+            .collect();
+        for mut file in files {
+            DhcpStorage::write_file(&mut file)?;
+        }
+        Ok(())
+    }
+
     /// Use this function when clearing out any duplicate DhcpFiles
-    fn get_unique() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
+    pub fn get_unique() -> Result<Vec<DhcpFile>, Box<dyn Error>> {
         let mut result: Vec<DhcpFile> = vec![];
         let files = DhcpStorage::read_file().unwrap_or_default();
         for file in files {
@@ -69,7 +89,6 @@ impl DhcpStorage {
         } else {
             lease.push(content.clone());
         };
-        println!("Writing to file: {lease:#?}");
         let serialized = bincode::encode_to_vec(&lease, config::standard())?;
         let mut file = OpenOptions::new()
             .create(true)

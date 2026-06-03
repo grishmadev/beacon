@@ -6,8 +6,8 @@ use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixDatagram;
-use std::slice;
 use std::time::{Duration, Instant};
+use std::{slice, thread};
 
 use dhcp4r::options::{DhcpOption, MessageType};
 use dhcp4r::packet::Packet;
@@ -25,7 +25,7 @@ use neli::{FromBytes, ToBytes};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::backend::functions::list_interfaces;
-use crate::mac_to_bytes;
+use crate::debug::log_msg;
 use crate::types::{DhcpLease, Interface};
 use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::helper::{
@@ -33,6 +33,7 @@ use crate::wifi::helper::{
     manage_lease_thread, remove_lease_and_gateway_ip, return_on_disconnect, set_default_route,
     set_iface_up, validate_packet,
 };
+use crate::{Log, mac_to_bytes};
 
 pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<dyn Error>> {
     let ifname = iface.ifname.as_ref().ok_or("Interface Name not found.")?;
@@ -154,13 +155,13 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
 
     // tokio::spawn(connection);
 
-    println!("Applying Network Configurations.");
     let ip_addr = host_data.ip_addr.ok_or("No IP address from DHCP.")?;
     if let Some(gateway) = host_data.gateway
         && let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway)
     {
         println!("Err: {}", e);
     }
+    println!("Applied Network Configurations.");
 
     set_dns(host_data.dns_servers)?;
 
@@ -238,10 +239,6 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         send_socket.send_to(data, dest.clone())?;
         println!("Notified Server for Disconnection.");
     }
-    // 'outer: for _ in 0..20 {
-    // let mut recv_buf = [0u8; 4096];
-    // let start = Instant::now();
-    // let timeout = Duration::from_secs(5);
     if send_wpa_cmd(&wpa_skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
     }
@@ -252,9 +249,21 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
 
     send_wpa_cmd(&wpa_skt, "DISCONNECT")?;
 
-    // thread::spawn(move || {
-    // });
-    remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len)?;
+    let timeout = Duration::from_secs(3);
+    let start = Instant::now();
+    thread::spawn(move || {
+        loop {
+            if start.elapsed() >= timeout {
+                log_msg("Disconnection Timeout.", Log::Err);
+                break;
+            }
+            if let Err(e) = remove_lease_and_gateway_ip(ifindex, ip_addr, gateway_ip, prefix_len) {
+                log_msg(&e.to_string(), Log::Err);
+            } else {
+                break;
+            };
+        }
+    });
     let _ = fs::remove_file(client_path);
     set_dns(vec![])?;
 

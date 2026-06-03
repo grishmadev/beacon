@@ -1,11 +1,12 @@
 use crate::backend::functions::connect_to;
-use crate::mac_to_bytes;
+use crate::debug::log_msg;
 use crate::types::{CurrentConnection, DhcpLease, FamilyInfo, Host, Interface, InterfaceType};
 use crate::wifi::dhcp_connection::DhcpStorage;
 use crate::wifi::history::list_saved_networks;
 use crate::wifi::wpa_supplicant::{
     find_active_interface, request_host_wired, request_host_wireless,
 };
+use crate::{Log, mac_to_bytes};
 use chrono::Utc;
 use dhcp4r::packet::Packet;
 use libc::RTMGRP_LINK;
@@ -34,10 +35,6 @@ use socket2::SockAddr;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::net::Ipv4Addr;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::Duration;
 use std::{error::Error, io::Cursor, path::Path};
 
@@ -932,29 +929,26 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     let iface = iface.clone();
     let ifname = iface.ifname.clone().ok_or("No ifname for lease thread.")?;
     tokio::spawn(async move {
-        let renewed = Arc::new(AtomicBool::new(false));
         loop {
-            match DhcpStorage::read_file() {
-                Ok(files) => {
-                    if files.is_empty() {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        continue;
-                    };
-                    if let Some(content) = files.iter().find(|f| f.ifname == ifname) {
-                        // actual absolute time the DhcpFile was initiated at
-                        let time_init = content.time_initiated;
-
-                        // duration of the lease lifetime
-                        let ls_dur = content.lease_duration as i64;
-
-                        let renewed_c = Arc::clone(&renewed);
-                        manage_lease(&iface, time_init, ls_dur, renewed_c);
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                    }
-                }
+            let files = match DhcpStorage::read_file() {
+                Ok(s) => s,
                 Err(e) => {
-                    println!("Error in reading dhcp files: {}", e);
+                    continue;
                 }
+            };
+            if files.is_empty() {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            };
+            if let Some(content) = files.iter().find(|f| f.ifname == ifname) {
+                // actual absolute time the DhcpFile was initiated at
+                let time_init = content.time_initiated;
+
+                // duration of the lease lifetime
+                let ls_dur = content.lease_duration as i64;
+
+                manage_lease(iface.clone(), time_init, ls_dur).await;
+                tokio::time::sleep(Duration::from_secs(10)).await;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -963,37 +957,28 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn manage_lease(iface: &Interface, time_init: i64, ls_dur: i64, renewed: Arc<AtomicBool>) {
+async fn manage_lease(iface: Interface, time_init: i64, ls_dur: i64) {
     let now = Utc::now();
     let t1 = ls_dur / 2;
-    let t2 = ls_dur as f64 * 0.875;
-    let time_passed = now.timestamp() - time_init;
-    let confirm_renewed = || {
-        let ren = Arc::clone(&renewed);
-        // renewed.store(true, Ordering::SeqCst);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            let time_passed = Utc::now().timestamp() - time_init;
-            if time_passed > t1 {
-                ren.store(false, Ordering::SeqCst);
-            }
-        });
-    };
+    let t2 = ls_dur * 7 / 8;
+    let time_passed = now.timestamp() - time_init + 1800;
+    if time_passed < t1 {
+        let wait_for_secs = time_passed - t1;
+        println!("Sleeping");
+        tokio::time::sleep(Duration::from_secs(wait_for_secs as u64)).await;
+    } else {
+        let broadcast = time_passed > t2;
+        println!("Renewing");
 
-    let renewed_bool = renewed.load(Ordering::SeqCst);
-    if renewed_bool {
-        return;
-    }
-
-    renewed.store(true, Ordering::SeqCst);
-    confirm_renewed();
-    if time_passed > t1 {
-        renewed.store(true, Ordering::SeqCst);
-        let broadcast = time_passed > t2 as i64;
-        if let Err(e) = renew_connection(iface, broadcast) {
-            eprintln!("Cannot Renew Connection: {}", e);
+        let mut failed = false;
+        if let Err(e) = renew_connection(&iface, broadcast) {
+            log_msg(&e.to_string(), Log::Err);
+            failed = true;
+        };
+        if failed {
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
-    }
+    };
 }
 
 pub fn autoconnect(
@@ -1044,8 +1029,6 @@ pub fn autoconnect(
         if let Err(e) = connect_to(&iface, host, &Some(password), None) {
             println!("Connection Error: {}", e);
         };
-        Ok(())
-    } else {
-        Err("No Saved Network found.".into())
     }
+    Ok(())
 }
