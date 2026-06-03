@@ -13,7 +13,7 @@ use tokio::{
     net::UnixListener,
 };
 
-use chrono::{Utc, format};
+use chrono::Utc;
 
 use crate::{
     Command, Log, Response, SOCKET_PATH,

@@ -932,7 +932,7 @@ pub fn manage_lease_thread(iface: &Interface) -> Result<(), Box<dyn Error>> {
         loop {
             let files = match DhcpStorage::read_file() {
                 Ok(s) => s,
-                Err(e) => {
+                Err(_) => {
                     continue;
                 }
             };
@@ -961,7 +961,7 @@ async fn manage_lease(iface: Interface, time_init: i64, ls_dur: i64) {
     let now = Utc::now();
     let t1 = ls_dur / 2;
     let t2 = ls_dur * 7 / 8;
-    let time_passed = now.timestamp() - time_init + 1800;
+    let time_passed = now.timestamp() - time_init;
     if time_passed < t1 {
         let wait_for_secs = time_passed - t1;
         println!("Sleeping");
