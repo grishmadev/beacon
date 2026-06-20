@@ -685,7 +685,7 @@ pub fn renew_connection(
     let server_id = current.server_id.ok_or("No Server ID found.")?;
 
     let data = if wired {
-        request_host_wired(mac_address, current_ip, server_id, broadcast)?
+        request_host_wired(mac_address, current_ip, server_id, iface, broadcast)?
     } else {
         request_host_wireless(iface, current_ip, None)?
     };

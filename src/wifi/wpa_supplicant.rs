@@ -455,7 +455,7 @@ pub fn request_host_wireless(
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknowledged");
+                                log_msg("Server Acknowledged Wireless", Log::Ok);
                                 is_ack = true;
                                 result.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
@@ -464,7 +464,7 @@ pub fn request_host_wireless(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused to Acknowledge.");
+                                log_msg("Server Refused to Acknowledge Wireless", Log::Err);
                                 break;
                             }
                             _ => {}
@@ -651,11 +651,13 @@ pub fn request_host_wired(
     mac_address: [u8; 6],
     current_ip: Ipv4Addr,
     server_id: Ipv4Addr,
+    iface: &Interface,
     broadcast: bool,
 ) -> Result<DhcpLease, Box<dyn Error>> {
-    let current_iface = find_active_interface()?.ok_or("No Active Interface Found.")?;
-    let ifname = current_iface.ifname.ok_or("No Ifname.")?;
-    let ifindex = current_iface.ifindex.ok_or("No Ifindex.")?;
+    let iface = iface.clone();
+    println!("current iface: {:#?}", iface);
+    let ifname = iface.ifname.unwrap_or_default();
+    let ifindex = iface.ifindex.unwrap_or_default();
     let socket = socket2::Socket::new(
         Domain::PACKET,
         Type::RAW,
@@ -727,7 +729,7 @@ pub fn request_host_wired(
                     match option {
                         DhcpOption::DhcpMessageType(val) => match val {
                             MessageType::Ack => {
-                                println!("Server acknowledged");
+                                log_msg("Server Acknowledged Wired", Log::Ok);
                                 is_ack = true;
                                 lease.ip_addr = if packet.yiaddr.is_unspecified() {
                                     Some(current_ip)
@@ -736,7 +738,7 @@ pub fn request_host_wired(
                                 };
                             }
                             MessageType::Nak => {
-                                println!("Server Refused to Acknowledge");
+                                log_msg("Server Refused to Acknowledge Wired", Log::Err);
                                 break;
                             }
                             _ => {}
@@ -770,6 +772,7 @@ pub fn request_host_wired(
 }
 
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
+    println!("ethernet: {:#?}", iface);
     // setting up USB ethernet
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
     let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;
@@ -784,7 +787,7 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     {
         let mac_address = offer.chaddr;
 
-        let edata = request_host_wired(mac_address, current_ip, server_id, false)?;
+        let edata = request_host_wired(mac_address, current_ip, server_id, iface, false)?;
         DhcpStorage::write_from_dhcplease(&edata, ifname.to_string())?;
         add_addr(&socket, *ifindex, current_ip)?;
         set_default_route(&socket, *ifindex, server_id)?;
