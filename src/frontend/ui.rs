@@ -76,6 +76,7 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
         )
         .highlight_style(Style::default().bg(Color::Blue));
 
+    let mut active_curcon = false;
     // Current Connection Info
     if let Some(connection) = app.current_connection.clone() {
         // println!("connections: {:#?}", connection);
@@ -98,17 +99,17 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
                 res.unwrap_or(backup_idx)
             }
         };
-        if let Some(curcon) = connection
-            .iter()
-            .find(|f| f.ifname == app.group[current_idx].iface.ifname)
+        if let Some(ifl) = app.group.get(current_idx)
+            && let Some(curcon) = connection.iter().find(|f| f.ifname == ifl.iface.ifname)
         {
+            active_curcon = true;
             let curcon = curcon.to_owned();
             let mut current_connection_list = vec![];
             let mut add_attr = |l: &str, r: &str| {
                 current_connection_list.push(format!("{:<20}: {:>15}", l, r));
             };
-            if let Some(ssid) = curcon.ssid {
-                add_attr("Host Name", &ssid.to_string());
+            if let Some(ref ssid) = curcon.ssid {
+                add_attr("Host Name", ssid);
             }
             if let Some(ref ifname) = curcon.ifname {
                 add_attr("Interface", ifname);
@@ -204,12 +205,17 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
     .row_highlight_style(Style::default().bg(Color::Blue));
 
     // rendering active and non-active tab based on condition
+    let if_area = if active_curcon {
+        left_inner_chunks[0]
+    } else {
+        left_inner
+    };
     if app.active_tab == Tab::Interface {
-        rect.render_stateful_widget(interfaces_block, left_inner_chunks[0], &mut app.iface_index);
+        rect.render_stateful_widget(interfaces_block, if_area, &mut app.iface_index);
         rect.render_widget(hosts_block, chunks[1]);
     } else {
         rect.render_stateful_widget(hosts_block, chunks[1], &mut app.host_index);
-        rect.render_widget(interfaces_block, left_inner_chunks[0]);
+        rect.render_widget(interfaces_block, if_area);
     }
     if app.active_tab == Tab::Input {
         let input_text = if app.input_text.is_empty() {
