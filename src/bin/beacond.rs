@@ -1,9 +1,10 @@
-use beacon::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, backend::threads::beacond};
+use beacon::{DAEMON_ERR_PATH, DAEMON_OUT_PATH, Log, backend::threads::beacond, debug::log_msg};
 use clap::Parser;
 use daemonize::Daemonize;
 use std::{
     error::Error,
     fs::{self, File},
+    process,
 };
 use tokio::runtime::Runtime;
 
@@ -36,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         match daemonize.start() {
             Ok(_) => {
-                println!("Beacon running in background.");
+                log_msg("Beacon running in background.", Log::Ok);
             }
             Err(e) => {
                 eprintln!("Error: {:#?}", e);
@@ -49,6 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     runtime.block_on(async {
         if let Err(e) = beacond().await {
             eprintln!("Beacon Crashed: {}", e);
+            process::exit(1);
         }
     });
 

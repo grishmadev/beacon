@@ -341,10 +341,6 @@ pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
                                 iface.set_mac(mac);
                             }
                         }
-                        Ifla::Operstate => {
-                            // let payload = attr.rta_payload().as_ref();
-                            // println!("operstate: {:#?}", payload);
-                        }
                         _ => {}
                     }
                 }
@@ -972,9 +968,12 @@ pub fn remove_lease_and_gateway_ip(
                 if err.error() == &0 {
                     return Ok(());
                 } else {
-                    println!(
-                        "Successfully removed IP {} for Interface [{}]",
-                        ip_addr, ifindex
+                    log_msg(
+                        &format!(
+                            "Successfully removed IP {} for Interface [{}]",
+                            ip_addr, ifindex
+                        ),
+                        Log::Ok,
                     );
                     return Err(io::Error::from_raw_os_error(-err.error()).into());
                 }
@@ -1065,6 +1064,7 @@ async fn manage_lease(iface: Interface, time_init: i64, ls_dur: i64) {
     let t1 = ls_dur / 2;
     let t2 = ls_dur * 7 / 8;
     let time_passed = now.timestamp() - time_init;
+    println!("time passed: {time_passed}, t1: {t1}, t2: {t2}");
     if time_passed < t1 {
         let wait_for_secs = time_passed - t1;
         println!("Sleeping");
@@ -1126,11 +1126,10 @@ pub fn autoconnect(
         (connection, pass)
     };
     if let (Some(host), Some(password)) = conpas {
-        let ssid_display = host.ssid.as_deref().unwrap_or("?");
-        println!("Found Saved Network.\n Connecting to {}", ssid_display);
+        log_msg("Found Saved Network.", Log::Info);
         let iface = iface.clone();
         if let Err(e) = connect_to(&iface, host, &Some(password), None) {
-            println!("Connection Error: {}", e);
+            log_msg(&format!("Connection Error: {}", e), Log::Err);
         };
     }
     Ok(())

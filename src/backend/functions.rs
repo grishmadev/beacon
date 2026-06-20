@@ -4,6 +4,8 @@ use std::{
 };
 
 use crate::{
+    Log,
+    debug::log_msg,
     types::{Connection, CurrentConnection, FamilyInfo, Host, Interface, InterfaceType},
     wifi::{
         helper::{get_current, get_interfaces, get_scan, trigger_scan},
@@ -104,7 +106,7 @@ pub fn disconnect_connection(
                 }
             }
         } else {
-            eprintln!("No SSID Found in Saved List.");
+            log_msg("No SSID Found in Saved List.", Log::Err);
         }
     };
     Ok(())
@@ -116,8 +118,6 @@ pub fn list_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
 }
 
 pub fn current_connection() -> Result<Option<Vec<CurrentConnection>>, Box<dyn Error>> {
-    // let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
-    // let family_id = family_info.id;
     let info = get_current()?;
     Ok(info)
 }

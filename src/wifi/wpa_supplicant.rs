@@ -111,7 +111,7 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
         return Err(format!("Couldn't connect to {}. {}", ssid, select_ok).into());
     }
 
-    println!("Connecting to {}..", ssid);
+    log_msg(&format!("Connecting to {}..", ssid), Log::Info);
     let mut recv_buffer = [0u8; 1024 * 4];
 
     loop {
@@ -159,9 +159,9 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
     if let Some(gateway) = host_data.gateway
         && let Err(e) = apply_network_config(&socket, *ifindex, ip_addr, gateway)
     {
-        println!("Err: {}", e);
+        log_msg(&format!("No Gateway IP found: {}", e), Log::Err);
     }
-    println!("Applied Network Configurations.");
+    log_msg("Applied Network Configurations.", Log::Ok);
 
     set_dns(host_data.dns_servers)?;
 
@@ -173,15 +173,19 @@ pub fn connect(iface: &Interface, ssid: &str, password: &str) -> Result<(), Box<
 
         match return_on_disconnect(ifindex as i32) {
             Ok(_) => {
-                println!("Engaging Full Disconnection from {}", ifindex);
+                log_msg(
+                    &format!("Engaging Full Disconnection from {}", ifindex),
+                    Log::Info,
+                );
                 if let Err(e) = disconnect(&ifname, false) {
-                    eprintln!("Disconnection ERROR: {}", e);
+                    log_msg(&format!("Disconnection ERROR: {}", e), Log::Err);
                 };
                 // engage complete disconnection
             }
-            Err(e) => {
-                println!("Error while looping for disconnection.\n{}", e);
-            }
+            Err(e) => log_msg(
+                &format!("Error while checking for disconnection.\n{}", e),
+                Log::Err,
+            ),
         };
     });
 
@@ -237,7 +241,7 @@ pub fn disconnect(ifname: &str, grace: bool) -> Result<(), Box<dyn Error>> {
         let mut buf = [0u8; 1500];
         let data = packet.encode(&mut buf);
         send_socket.send_to(data, dest.clone())?;
-        println!("Notified Server for Disconnection.");
+        log_msg("Notified Server for Disconnection.", Log::Info);
     }
     if send_wpa_cmd(&wpa_skt, "PING")? != "PONG" {
         return Err("wpa_supplicant did not respond.".into());
@@ -489,11 +493,11 @@ pub fn request_host_wireless(
                 continue;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                println!("Connection already exists, proceeding safely..");
+                log_msg("Connection already exists, proceeding safely..", Log::Info);
                 break;
             }
             Err(e) => {
-                print!("Error, {}", e);
+                log_msg(&format!("Error while Connecting Wireless: {}", e), Log::Err);
                 return Err(e.into());
             }
         }
@@ -655,7 +659,6 @@ pub fn request_host_wired(
     broadcast: bool,
 ) -> Result<DhcpLease, Box<dyn Error>> {
     let iface = iface.clone();
-    println!("current iface: {:#?}", iface);
     let ifname = iface.ifname.unwrap_or_default();
     let ifindex = iface.ifindex.unwrap_or_default();
     let socket = socket2::Socket::new(
@@ -763,7 +766,7 @@ pub fn request_host_wired(
                 continue;
             }
             Err(e) => {
-                print!("Error, {}", e);
+                log_msg(&format!("Error in connecting Wired: {}", e), Log::Err);
                 return Err(e.into());
             }
         }
@@ -772,7 +775,6 @@ pub fn request_host_wired(
 }
 
 pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
-    println!("ethernet: {:#?}", iface);
     // setting up USB ethernet
     let socket = NlSocket::connect(NlFamily::Route, None, Groups::empty())?;
     let ifindex = iface.ifindex.as_ref().ok_or("No ifindex.")?;

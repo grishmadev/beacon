@@ -42,11 +42,11 @@ pub fn spawn_ethernet_connection() -> Result<(), Box<dyn Error>> {
 
             match (is_connected, eth) {
                 (false, Some(f)) if connect_via_ethernet(f).is_ok() => {
-                    println!("Connected via Ethernet");
+                    log_msg("Connected via Ethernet", Log::Ok);
                     status_clone.store(true, Ordering::SeqCst);
                 }
                 (true, None) => {
-                    println!("Disconnected Ethernet");
+                    log_msg("Disconnected Ethernet", Log::Ok);
                     status_clone.store(false, Ordering::SeqCst);
                 }
                 _ => {}
@@ -149,7 +149,10 @@ pub async fn spawn_main_loop(
                             match bincode::decode_from_slice(&buf[..n], config::standard()) {
                                 Ok((c, _)) => c,
                                 Err(e) => {
-                                    eprintln!("Unable to parse Command. Skipping.\n{}", e);
+                                    log_msg(
+                                        &format!("Unable to parse Command. Skipping.\n{}", e),
+                                        Log::Err,
+                                    );
                                     continue;
                                 }
                             };
