@@ -31,7 +31,7 @@ pub struct App {
     pub iface_index: ListState, // starts from 0
     pub host_index: TableState,
     pub notification: Option<String>,
-    pub current_connection: Option<CurrentConnection>,
+    pub current_connection: Option<Vec<CurrentConnection>>,
     pub input_text: String,
 }
 

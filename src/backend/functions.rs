@@ -6,7 +6,7 @@ use std::{
 use crate::{
     types::{Connection, CurrentConnection, FamilyInfo, Host, Interface, InterfaceType},
     wifi::{
-        helper::{get_current, get_family_info, get_interfaces, get_scan, trigger_scan},
+        helper::{get_current, get_interfaces, get_scan, trigger_scan},
         history::{add_connection_to_history, list_saved_networks},
         wpa_supplicant::{connect, disconnect},
     },
@@ -87,9 +87,14 @@ pub fn disconnect_connection(
     ifname: &str,
     reject_list: Option<Arc<Mutex<Vec<String>>>>,
 ) -> Result<(), Box<dyn Error>> {
-    let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
+    // let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
     if disconnect(ifname, true).is_ok() {
-        if let Some(current) = get_current(family_info.id)? {
+        if let Some(current) = get_current()? {
+            let current = current
+                .iter()
+                .find(|f| f.ifname == Some(ifname.to_string()))
+                .unwrap()
+                .to_owned();
             if let Some(ssid) = current.ssid
                 && let Some(list) = reject_list
             {
@@ -110,9 +115,9 @@ pub fn list_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
     Ok(interfaces)
 }
 
-pub fn current_connection() -> Result<Option<CurrentConnection>, Box<dyn Error>> {
-    let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
-    let family_id = family_info.id;
-    let info = get_current(family_id)?;
+pub fn current_connection() -> Result<Option<Vec<CurrentConnection>>, Box<dyn Error>> {
+    // let family_info = get_family_info().map_err(|e| format!("Failed to get family info: {}", e))?;
+    // let family_id = family_info.id;
+    let info = get_current()?;
     Ok(info)
 }

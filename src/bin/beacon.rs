@@ -12,9 +12,7 @@ use ratatui::{
     crossterm::{
         event::{self, DisableMouseCapture, Event, KeyCode},
         execute,
-        terminal::{
-            Clear, ClearType, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        },
+        terminal::{Clear, ClearType, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
     prelude::CrosstermBackend,
 };

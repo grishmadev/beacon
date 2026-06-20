@@ -6,9 +6,12 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, Paragraph, Row, Table},
 };
 
-use crate::frontend::{
-    app::{App, Tab},
-    sigrate_to_bars,
+use crate::{
+    frontend::{
+        app::{App, Tab},
+        sigrate_to_bars,
+    },
+    types::InterfaceType,
 };
 
 pub fn set_layouts(app: &mut App, rect: &mut Frame) {
@@ -71,65 +74,90 @@ pub fn set_layouts(app: &mut App, rect: &mut Frame) {
                 .borders(Borders::ALL)
                 .title(format!(" Interface ({}) ", iface_count)),
         )
-        .highlight_style(Style::default().bg(Color::Blue))
-        .highlight_symbol(">> ");
+        .highlight_style(Style::default().bg(Color::Blue));
 
     // Current Connection Info
-    if let Some(curcon) = app.current_connection.clone() {
-        let mut current_connection_list = vec![];
-        let mut add_attr = |l: &str, r: &str| {
-            current_connection_list.push(format!("{:<20}: {:>15}", l, r));
+    if let Some(connection) = app.current_connection.clone() {
+        // println!("connections: {:#?}", connection);
+        let mut backup_idx = 0;
+        let current_idx: usize = match app.iface_index.selected() {
+            Some(s) => s,
+            None => {
+                let mut res = None;
+                'outer: for (idx, ifl) in app.group.iter().enumerate() {
+                    if ifl.iface.iftype == InterfaceType::Wireless {
+                        backup_idx = idx;
+                    }
+                    for h in ifl.hosts.iter() {
+                        if h.is_connected {
+                            res = Some(idx);
+                            break 'outer;
+                        }
+                    }
+                }
+                res.unwrap_or(backup_idx)
+            }
         };
-        if let Some(ssid) = curcon.ssid {
-            add_attr("Host Name", &ssid.to_string());
-        }
-        if let Some(ref ifname) = curcon.ifname {
-            add_attr("Interface", ifname);
-        }
-        if let Some(ip) = curcon.ip_addr {
-            add_attr("IP", &ip.to_string());
-        }
-        if let Some(dns) = curcon.dns_servers.first() {
-            add_attr("DNS", &dns.to_string());
-        }
-        if let Some(server_id) = curcon.server_id {
-            add_attr("Server ID", &server_id.to_string());
-        }
-        if let Some(subnet) = curcon.subnet_mask {
-            add_attr("Subnet", &subnet.to_string());
-        }
-        if let Some(gateway) = curcon.gateway {
-            add_attr("Gateway", &gateway.to_string());
-        }
-        if let Some(freq) = curcon.frequency {
-            add_attr("Frequency", &format!("{} MHz", freq));
-        }
-        let time_left = Utc
-            .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
-            .single()
-            .unwrap_or(Utc::now())
-            - Utc::now();
-        let print_time = if time_left.num_seconds().is_negative() {
-            "Loading..."
-        } else {
-            &time_left.num_seconds().to_string()
-        };
-        add_attr("Time Left", print_time);
-        // add_attr(
-        //     "Renewal Time",
-        //     &(curcon.lease_duration as f32 / 2.0).to_string(),
-        // );
-        // add_attr(
-        //     "Rebinding Time",
-        //     &(curcon.lease_duration as f32 * 0.875).to_string(),
-        // );
+        if let Some(curcon) = connection
+            .iter()
+            .find(|f| f.ifname == app.group[current_idx].iface.ifname)
+        {
+            let curcon = curcon.to_owned();
+            let mut current_connection_list = vec![];
+            let mut add_attr = |l: &str, r: &str| {
+                current_connection_list.push(format!("{:<20}: {:>15}", l, r));
+            };
+            if let Some(ssid) = curcon.ssid {
+                add_attr("Host Name", &ssid.to_string());
+            }
+            if let Some(ref ifname) = curcon.ifname {
+                add_attr("Interface", ifname);
+            }
+            if let Some(ip) = curcon.ip_addr {
+                add_attr("IP", &ip.to_string());
+            }
+            if let Some(dns) = curcon.dns_servers.first() {
+                add_attr("DNS", &dns.to_string());
+            }
+            if let Some(server_id) = curcon.server_id {
+                add_attr("Server ID", &server_id.to_string());
+            }
+            if let Some(subnet) = curcon.subnet_mask {
+                add_attr("Subnet", &subnet.to_string());
+            }
+            if let Some(gateway) = curcon.gateway {
+                add_attr("Gateway", &gateway.to_string());
+            }
+            if let Some(freq) = curcon.frequency {
+                add_attr("Frequency", &format!("{} MHz", freq));
+            }
+            let time_left = Utc
+                .timestamp_opt(curcon.time_initiated + curcon.lease_duration as i64, 0)
+                .single()
+                .unwrap_or(Utc::now())
+                - Utc::now();
+            let print_time = if time_left.num_seconds().is_negative() {
+                "Loading..."
+            } else {
+                &time_left.num_seconds().to_string()
+            };
+            add_attr("Time Left", print_time);
+            // add_attr(
+            //     "Renewal Time",
+            //     &(curcon.lease_duration as f32 / 2.0).to_string(),
+            // );
+            // add_attr(
+            //     "Rebinding Time",
+            //     &(curcon.lease_duration as f32 * 0.875).to_string(),
+            // );
 
-        let current_connection = List::new(current_connection_list).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Current Connection "),
-        );
-        rect.render_widget(current_connection, left_inner_chunks[1]);
+            let current_connection = List::new(current_connection_list).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Current Connection "),
+            );
+            rect.render_widget(current_connection, left_inner_chunks[1]);
+        };
     }
 
     let hosts_vec = app.get_hosts();

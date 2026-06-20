@@ -9,7 +9,6 @@ use crate::wifi::wpa_supplicant::{
 use crate::{Log, mac_to_bytes};
 use chrono::Utc;
 use dhcp4r::packet::Packet;
-use libc::RTMGRP_LINK;
 use neli::consts::rtnl::{Ifa, IfaF, RtTable, Rta, RtmF, Rtn, Rtprot};
 use neli::err::Nlmsgerr;
 use neli::rtnl::{Ifaddrmsg, IfaddrmsgBuilder, RtattrBuilder, RtmsgBuilder};
@@ -280,7 +279,6 @@ pub fn get_scan(family_id: u16, ifindex: u32) -> Result<Vec<Host>, Box<dyn Error
 pub fn get_interfaces() -> Result<Vec<Interface>, Box<dyn Error>> {
     let sock = NlSocket::new(NlFamily::Route)?;
     // attribute not needed in requ\t
-    // DUMP flag asks for all AP
 
     let ifinfo = IfinfomsgBuilder::default()
         .ifi_family(RtAddrFamily::Unspecified)
@@ -361,46 +359,117 @@ fn is_wireless(ifname: &str) -> bool {
     Path::new(&ifpath).exists()
 }
 
-pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn Error>> {
-    let sock = NlSocket::new(NlFamily::Generic)?;
-    let attr_buffer: GenlBuffer<u16, Buffer> = GenlBuffer::new();
+pub fn list_connected_interfaces() -> Result<Option<Vec<CurrentConnection>>, Box<dyn Error>> {
+    let sock = NlSocket::new(NlFamily::Route)?;
+
+    let ifinfo = IfinfomsgBuilder::default()
+        .ifi_family(RtAddrFamily::Unspecified)
+        .ifi_type(Arphrd::None)
+        .ifi_index(0)
+        .ifi_change(Iff::empty())
+        .ifi_flags(Iff::empty())
+        .build()?;
+
+    let nl_msg = NlmsghdrBuilder::default()
+        .nl_flags(NlmF::DUMP | NlmF::REQUEST)
+        .nl_type(Rtm::Getlink)
+        .nl_payload(NlPayload::Payload(ifinfo))
+        .build()?;
+
+    let mut msg_buffer = Cursor::new(Vec::<u8>::new());
+    nl_msg.to_bytes(&mut msg_buffer)?;
+    sock.send(msg_buffer.get_ref(), Msg::empty())?;
+    let mut connections = Vec::<CurrentConnection>::new();
+    loop {
+        let mut recv_buffer = [0u8; 4096 * 16];
+        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
+        let mut cursor = Cursor::new(&recv_buffer[..size]);
+
+        while cursor.position() < size as u64 {
+            let res: Nlmsghdr<Rtm, Ifinfomsg> = Nlmsghdr::from_bytes(&mut cursor)?;
+
+            if let NlPayload::Err(e) = res.nl_payload() {
+                return Err(format!("Kernel Error: {}", e).into());
+            }
+
+            if u16::from(*res.nl_type()) == libc::NLMSG_DONE as u16 {
+                return Ok(Some(connections));
+            }
+
+            if let NlPayload::Payload(link_info) = res.nl_payload() {
+                let mut connection = CurrentConnection::new();
+                connection.ifindex = Some(*link_info.ifi_index() as u32);
+                let mut is_up = false;
+                for attr in link_info.rtattrs().iter() {
+                    match attr.rta_type() {
+                        Ifla::Ifname => {
+                            let name = attr.get_payload_as_with_len::<String>()?;
+                            connection.ifname = Some(name);
+                        }
+                        Ifla::Address => {
+                            let payload = attr.rta_payload().as_ref();
+                            if payload.len() == 6 {
+                                let mac = payload
+                                    .iter()
+                                    .map(|b| format!("{b:02X}"))
+                                    .collect::<Vec<String>>()
+                                    .join(":");
+                                connection.mac = Some(mac);
+                            }
+                        }
+                        Ifla::Operstate => {
+                            let payload = attr.rta_payload().as_ref()[0];
+                            is_up = payload == 6;
+                        }
+                        _ => {}
+                    }
+                }
+                if is_up {
+                    connections.push(connection);
+                }
+            }
+        }
+    }
+}
+
+pub fn get_wireless_interface_details(
+    connection: &mut CurrentConnection,
+) -> Result<(), Box<dyn Error>> {
+    let sock = NlSocketHandle::connect(NlFamily::Generic, None, Groups::empty())?;
+    let family_info = get_family_info().unwrap_or_default();
+    let family_id = family_info.id;
+    let gen_buf = GenlBuffer::<u16, Buffer>::new();
     let genl_header = GenlmsghdrBuilder::<u8, u16>::default()
         .cmd(Nl80211Cmd::CmdGetInterface.into())
         .version(1)
-        .attrs(attr_buffer)
+        .attrs(gen_buf)
         .build()?;
-
     let nl_msg = NlmsghdrBuilder::default()
         .nl_flags(NlmF::REQUEST | NlmF::DUMP)
         .nl_type(family_id)
         .nl_payload(NlPayload::Payload(genl_header))
         .build()?;
-    let mut msg_buffer = Cursor::new(Vec::<u8>::new());
-    nl_msg.to_bytes(&mut msg_buffer)?;
-    sock.send(msg_buffer.get_ref(), Msg::empty())?;
-    loop {
-        let mut recv_buffer = [0u8; 1024 * 64];
-        let (size, _) = sock.recv(&mut recv_buffer, Msg::empty())?;
-        let mut cursor = Cursor::new(&recv_buffer[..size]);
-        let res: Nlmsghdr<u16, Genlmsghdr<u8, u16>> = Nlmsghdr::from_bytes(&mut cursor)?;
 
-        if let NlPayload::Err(e) = res.nl_payload() {
-            return Err(format!("Kernel Error: {}", e).into());
+    sock.send(&nl_msg)?;
+    let res = sock.recv_all::<u16, Genlmsghdr<u8, u16>>()?;
+    for msg in res.0 {
+        // let msg = msg?;
+        if let NlPayload::Err(e) = msg.nl_payload() {
+            log_msg(&format!("Failed to get interface details: {}", e), Log::Err);
+            return Err(e.to_string().into());
         }
-
-        if *res.nl_type().to_string() == libc::NLMSG_DONE.to_string() {
-            break;
-        }
-
-        if let NlPayload::Payload(genl) = res.nl_payload() {
-            let mut connection = CurrentConnection::new();
+        if let NlPayload::Payload(genl) = msg.nl_payload() {
             for attr in genl.attrs().iter() {
                 let payload = attr.nla_payload().as_ref();
-                match Nl80211Attr::from(*attr.nla_type().nla_type()) {
+                let nla_type = *attr.nla_type().nla_type();
+                match Nl80211Attr::from(nla_type) {
                     Nl80211Attr::AttrIfname => {
                         let name = String::from_utf8_lossy(payload)
                             .trim_end_matches('\0')
                             .to_string();
+                        if &name != connection.ifname.as_ref().unwrap() {
+                            continue;
+                        }
                         connection.ifname = Some(name);
                     }
 
@@ -418,13 +487,13 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                     }
                     Nl80211Attr::AttrSsid => {
                         let ssid = String::from_utf8_lossy(payload).to_string();
-                        println!("ssid: {}", ssid);
+                        connection.ssid = Some(ssid);
                     }
-
                     _ => {}
                 }
             }
             if let Some(ifindex) = connection.ifindex {
+                let family_id = get_family_info().unwrap_or_default().id;
                 let hosts = get_scan(family_id, ifindex).unwrap_or_default();
                 match hosts.into_iter().find(|h| h.is_connected) {
                     Some(host) => {
@@ -432,7 +501,7 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                         connection.bssid = host.bssid;
                         connection.frequency = host.frequency;
                     }
-                    None => return Ok(None),
+                    None => return Err("No current Storage found".into()),
                 };
             }
             connection.ip_addr = get_current_ip(None).ok().flatten();
@@ -446,10 +515,36 @@ pub fn get_current(family_id: u16) -> Result<Option<CurrentConnection>, Box<dyn 
                 connection.lease_duration = edata.lease_duration;
                 connection.time_initiated = edata.time_initiated;
             }
-            return Ok(Some(connection));
         }
     }
-    Ok(None)
+    Ok(())
+}
+
+pub fn detail_connected_interface(
+    list: Vec<CurrentConnection>,
+) -> Result<Option<Vec<CurrentConnection>>, Box<dyn Error>> {
+    let mut list = list;
+    for conn in list.iter_mut() {
+        if let Some(name) = conn.ifname.as_ref()
+            && name.starts_with("wl")
+        {
+            get_wireless_interface_details(conn)?;
+        }
+    }
+    Ok(Some(list))
+}
+
+pub fn get_current() -> Result<Option<Vec<CurrentConnection>>, Box<dyn Error>> {
+    let list = match list_connected_interfaces()? {
+        Some(s) => s,
+        None => {
+            let err = "Cannot list active interfaces.";
+            log_msg(err, Log::Err);
+            return Ok(None);
+        }
+    };
+    let list_info = detail_connected_interface(list)?;
+    Ok(list_info)
 }
 
 pub fn get_current_ip(ifindex: Option<u32>) -> Result<Option<Ipv4Addr>, Box<dyn Error>> {
@@ -574,9 +669,14 @@ pub fn renew_connection(
     broadcast: bool,
 ) -> Result<Option<DhcpLease>, Box<dyn Error>> {
     let wired = iface.iftype == InterfaceType::Wired;
-    let family_info = get_family_info().unwrap_or_default();
-    let family_id = family_info.id;
-    let current = get_current(family_id)?.ok_or("Cannot find any current Connection.")?;
+    // let family_info = get_family_info().unwrap_or_default();
+    // let family_id = family_info.id;
+    let current = get_current()?.ok_or("Cannot find any current Connection.")?;
+    let current = current
+        .iter()
+        .find(|f| f.ifname == iface.ifname)
+        .unwrap()
+        .to_owned();
 
     // IP for this client (This Device)
     let current_ip = current.ip_addr.ok_or("No IP Address found.")?;
@@ -793,7 +893,7 @@ pub fn return_on_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
     let socket = NlSocket::connect(
         NlFamily::Route,
         None,
-        Groups::new_groups(&[RTMGRP_LINK as u32]),
+        Groups::new_groups(&[libc::RTMGRP_LINK as u32]),
     )?;
 
     loop {
@@ -813,7 +913,10 @@ pub fn return_on_disconnect(ifindex: i32) -> Result<(), Box<dyn Error>> {
             let is_up = flags.contains(Iff::UP);
             let is_running = flags.contains(Iff::RUNNING);
             if !is_up || !is_running {
-                println!("Interface [{}] is not up or running", ifindex);
+                log_msg(
+                    &format!("Interface [{}] is not up or running", ifindex),
+                    Log::Warn,
+                );
                 return Ok(());
             }
         }

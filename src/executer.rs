@@ -10,10 +10,9 @@ use bincode::config;
 use crate::{
     Command, Response, SOCKET_PATH,
     backend::functions::{
-        connect_to, current_connection, disconnect_connection, list_active_signals,
-        list_all_signals,
+        connect_to, disconnect_connection, list_active_signals, list_all_signals,
     },
-    wifi::helper::{get_family_info, get_interfaces},
+    wifi::helper::{get_current, get_family_info, get_interfaces},
 };
 pub fn execute(
     cmd: &Command,
@@ -57,7 +56,7 @@ pub fn execute(
                 Err(e) => Response::Error(format!("Could\'nt Connect: {}", e)),
             }
         }
-        Command::CurrentConnection => match current_connection() {
+        Command::CurrentConnection => match get_current() {
             Ok(curcon) => Response::CurrentConnection(curcon),
             Err(err) => Response::Error(err.to_string()),
         },

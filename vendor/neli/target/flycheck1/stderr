@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on package cache
+error: failed to select a version for the requirement `bitflags = "^2.4"` (locked to 2.10.0)
+candidate versions found which didn't match: 2.11.1, 1.3.2
+location searched: directory source `/home/grishma/Ideas/beacon/vendor` (which is replacing registry `crates-io`)
+required by package `neli v0.7.4 (/home/grishma/Ideas/beacon/vendor/neli)`
+perhaps a crate was updated and forgotten to be re-vendored?

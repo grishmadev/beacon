@@ -55,7 +55,7 @@ pub enum Response {
     Ok,
     Pong,
     Tick,
-    CurrentConnection(Option<CurrentConnection>),
+    CurrentConnection(Option<Vec<CurrentConnection>>),
     ActiveHosts(String, Vec<Host>),
     SavedHosts(Vec<Connection>),
     AllInterfaces(Vec<Interface>),
