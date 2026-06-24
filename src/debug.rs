@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use chrono::Utc;
+use chrono::Local;
 
 use crate::Log;
 
@@ -33,12 +33,13 @@ pub fn dwrite(logs: String) -> Result<(), Box<dyn Error>> {
 }
 
 pub fn log_msg(text: &str, msg_type: Log) {
-    let time = Utc::now().time();
+    let now = Local::now();
+    let datetime = now.format("%Y-%m-%d %H:%M:%S");
     let msg = match msg_type {
         Log::Ok => "OK",
         Log::Err => "Error",
         Log::Info => "Info",
         Log::Warn => "Warn",
     };
-    eprintln!("[ {time} ][ {msg} ] {text}");
+    eprintln!("[ {datetime} ][ {msg} ] {text}");
 }

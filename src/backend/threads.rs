@@ -124,7 +124,7 @@ pub async fn spawn_autoconnection(
     Ok(())
 }
 
-// Main Request Response Thread
+/// Main Request Response Thread
 pub async fn spawn_main_loop(
     reject_list: Arc<Mutex<Vec<String>>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {

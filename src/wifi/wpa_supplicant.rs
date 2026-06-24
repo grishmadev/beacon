@@ -439,7 +439,7 @@ pub fn request_host_wireless(
     let mut result = DhcpLease::default();
     loop {
         if timeout.elapsed() >= Duration::from_secs(5) {
-            println!("Timeout");
+            log_msg(&format!("{ifname} connection Timeout"), Log::Warn);
             break;
         }
         match socket.recv(&mut buf) {
@@ -588,7 +588,7 @@ pub fn discover_host(iface: &Interface) -> Result<DhcpLease, Box<dyn Error>> {
         loop {
             let now = Instant::now();
             if now >= timeout {
-                println!("Timeout");
+                log_msg(&format!("{ifname} discovery Timeout."), Log::Warn);
                 break;
             }
             match socket.recv_from(&mut res_buf) {
@@ -711,7 +711,7 @@ pub fn request_host_wired(
 
     loop {
         if timeout.elapsed() >= Duration::from_secs(5) {
-            println!("Timeout");
+            log_msg(&format!("{ifname} connection Timeout."), Log::Warn);
             break;
         }
         match socket.recv(&mut res_buf) {
@@ -789,7 +789,7 @@ pub fn connect_via_ethernet(iface: &Interface) -> Result<(), Box<dyn Error>> {
     {
         let mac_address = offer.chaddr;
 
-        let edata = request_host_wired(mac_address, current_ip, server_id, iface, false)?;
+        let edata = request_host_wired(mac_address, current_ip, server_id, iface, true)?;
         DhcpStorage::write_from_dhcplease(&edata, ifname.to_string())?;
         add_addr(&socket, *ifindex, current_ip)?;
         set_default_route(&socket, *ifindex, server_id)?;
