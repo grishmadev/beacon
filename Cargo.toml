@@ -4,7 +4,6 @@ version = "0.1.3"
 edition = "2024"
 
 [dependencies]
-# dhcp4r = { path = "/home/grishma/Build/dhcp4r/" }
 dhcp4r = "0.2.3"
 nl80211 = "0.0.2"
 rand = "0.10.0"
